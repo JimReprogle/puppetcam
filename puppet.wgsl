@@ -6,7 +6,7 @@
 // Felt, not plastic: no specular on fabric, wrap diffuse, grazing sheen, fiber albedo/normal noise,
 // AO, soft shadows, and a fuzzy fiber halo on the silhouette instead of a hard edge.
 
-struct Params { v: array<vec4f, 11> };
+struct Params { v: array<vec4f, 12> };
 @group(0) @binding(0) var<uniform> P: Params;
 
 // decoded parameters (set once per fragment in fs)
@@ -44,13 +44,12 @@ const M_TONGUE = 9.0;
 const M_BROW = 10.0;
 const M_SHIRT = 11.0;
 const M_BUTTON = 12.0;
-const M_WEB = 13.0;
 const M_NECK = 14.0;
 
 const HINGE = vec3f(0.0, -0.165, -0.06);
 const UP_ANG = 0.48;
 const JAW_ANG = 0.2;
-const WEB_X = 0.23;     // cheek webs fill the mouth gap only outside |x| > WEB_X; the middle stays open
+const CORNER_BLEND = 0.14;  // how far the lips blend together at the mouth corners (x mouth opening)
 const DROOP = 0.9;     // hinge line drop toward the mouth corners (downturned mouth)
 const EYE_R = 0.056;
 const EYE_C = vec3f(0.082, 0.07, 0.175);
@@ -342,8 +341,9 @@ fn lowerParts(q: vec3f) -> vec2f {
         gt -= 0.009 * vnoise(q * vec3f(85.0, 9.0, 85.0));
         r = vec2f(gt, M_BEARD);
     }
-    // tongue on the jaw floor (hidden inside the head while closed)
-    r = U(r, vec2f(sdEllipsoid(q - vec3f(0.0, HINGE.y + 0.012, 0.05), vec3f(0.10, 0.03, 0.11)), M_TONGUE));
+    // tongue sunk into the jaw floor, well back from the lip (it read as a disk lolling out when seen
+    // from below); hidden inside the head while closed
+    r = U(r, vec2f(sdEllipsoid(q - vec3f(0.0, HINGE.y - 0.008, -0.005), vec3f(0.085, 0.03, 0.085)), M_TONGUE));
     return r;
 }
 
@@ -353,26 +353,20 @@ fn headMap(pw: vec3f) -> vec2f {
     // upper part: rotated up about the hinge; jaw: rotated down
     let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);
     let ql = HINGE + rotX(q - HINGE, -JAW_ANG * g_mouth);
-    let su = skull(qu);
     // the hinge line curves down toward the corners: a downturned mouth, closed or open
+    let su = skull(qu);
     let cutU = HINGE.y - DROOP * qu.x * qu.x - qu.y;
-    var r = vec2f(max(su.x, cutU), select(su.y, M_MOUTH, cutU > su.x));
-    r = U(r, upperParts(qu));
+    let du = vec2f(max(su.x, cutU), select(su.y, M_MOUTH, cutU > su.x));
     let sl = skull(ql);
     let cutL = ql.y - (HINGE.y - DROOP * ql.x * ql.x);
-    r = U(r, vec2f(max(sl.x, cutL), select(sl.y, M_MOUTH, cutL > sl.x)));
+    let dl = vec2f(max(sl.x, cutL), select(sl.y, M_MOUTH, cutL > sl.x));
+    // mouth corners: the two halves blend into one another (fabric stretched between the lips), so the
+    // opening is a rounded lens and the corners are never see-through when turned. Middle: a clean gap.
+    // (Flat "web" walls read as skin flaps; a sack in the gap read as a lump or a red pillow.)
+    let k = CORNER_BLEND * g_mouth * smoothstep(0.1, 0.26, abs(q.x)) + 1e-4;
+    var r = vec2f(smin(du.x, dl.x, k), select(dl.y, du.y, du.x < dl.x));
+    r = U(r, upperParts(qu));
     r = U(r, lowerParts(ql));
-    if (g_mouth > 0.0) {
-        // cheek webs: only the outer walls of a sack that spans the gap. The palate and jaw floor already
-        // form a cavity that closes at the hinge; a full sack's front bulged into the mouth (convex "red
-        // pillow"). Bent down at the corners like the hinge line and as wide as the jowly head, else
-        // the open mouth is see-through at the corners
-        let sk = vec3f(0.0, HINGE.y + 0.03 * g_mouth, -0.02);
-        let qs = vec3f(q.x, q.y + DROOP * q.x * q.x, q.z);
-        let sack = sdEllipsoid(qs - sk, vec3f(0.275, 0.014 + 0.1 * g_mouth, 0.19)) * 0.8;
-        let web = max(sack, WEB_X - abs(q.x));
-        r = U(r, vec2f(web, M_WEB));
-    }
     return r;
 }
 
@@ -486,11 +480,6 @@ fn albedo(mat: f32) -> vec3f {
     if (mat == M_TONGUE) {
         return vec3f(0.62, 0.17, 0.2);
     }
-    if (mat == M_WEB) {
-        // inside of the cheeks: mouth lining, a touch lighter than the palate (skin-colored webs read as
-        // brown fangs at the mouth corners)
-        return vec3f(0.22, 0.03, 0.04);
-    }
     if (mat == M_BUTTON) {
         return vec3f(0.8, 0.8, 0.78);
     }
@@ -544,7 +533,7 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
             alb *= 0.65 + 0.6 * vnoise(q * vec3f(260.0, 40.0, 260.0));
         }
     }
-    if (mat == M_MOUTH || mat == M_WEB || mat == M_TONGUE) {
+    if (mat == M_MOUTH || mat == M_TONGUE) {
         // inside the mouth: darker the deeper toward the hinge, so the cavity recedes
         alb *= mix(0.2, 1.0, smoothstep(HINGE.z, 0.2, q.z));
     }
@@ -658,6 +647,17 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     }
     if (hit) {
         let p = ro + rd * t;
+        if (P.v[11].x > 1.5) {
+            // debug view 2: depth, encoded as (t - (F - 0.5)) in red (decode: F - 0.5 + r/255)
+            return vec4f(clamp(t - (F - 0.5), 0.0, 1.0), 0.0, 0.0, 1.0);
+        }
+        if (P.v[11].x > 0.5) {
+            // debug view 1: flat false color per material id
+            let m = map(p).y;
+            let hue = fract(m * 0.137) * 6.0;
+            let k = clamp(vec3f(abs(hue - 3.0) - 1.0, 2.0 - abs(hue - 2.0), 2.0 - abs(hue - 4.0)), vec3f(0.0), vec3f(1.0));
+            return vec4f(k * (0.5 + 0.5 * dot(normalAt(p), normalize(vec3f(-0.35, 0.55, 0.76)))), 1.0);
+        }
         let col = shade(p, rd, map(p).y);
         return vec4f(pow(clamp(col, vec3f(0.0), vec3f(1.0)), vec3f(1.0 / 2.2)), 1.0);
     }

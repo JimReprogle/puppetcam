@@ -48,7 +48,7 @@ class GpuPuppet:
         self.dev = adapter.request_device_sync()
         with open(SHADER) as f:
             mod = self.dev.create_shader_module(code=f.read())
-        self.ubuf = self.dev.create_buffer(size=16 * 11, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
+        self.ubuf = self.dev.create_buffer(size=16 * 12, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
         self.pipe = self.dev.create_render_pipeline(
             layout="auto",
             vertex={"module": mod, "entry_point": "vs"},
@@ -58,12 +58,13 @@ class GpuPuppet:
         self.bind = self.dev.create_bind_group(layout=self.pipe.get_bind_group_layout(0),
                                                entries=[{"binding": 0, "resource": {"buffer": self.ubuf}}])
         self.targets = {}
+        self.debug_view = 0                   # diagnostics: 1 material false color, 2 depth
 
     def _params(self, st, mode, extra):
         cfg = self.cfg
         mouth = st.get("mouth", 0.0)
         closed = mouth < self.mouth_open
-        v = np.zeros((11, 4), np.float32)
+        v = np.zeros((12, 4), np.float32)
         v[0] = (st["yaw"], st["pitch"], 0.0 if closed else mouth, st.get("lid", 0.35))
         v[1] = (*st.get("gaze", (0.0, 0.0)), *st.get("brow", (0.0, 0.0)))
         v[2] = (st.get("corners", 0.0), cfg["pez"], cfg["long"], mode)
@@ -77,6 +78,7 @@ class GpuPuppet:
         v[9] = (1.0 if cfg["mustache"] else 0.0, *_lin(cfg["brow"]))
         v[10] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0), HAIRLINES.index(cfg["hairline"]),
                  cfg["forehead"])
+        v[11, 0] = float(self.debug_view)
         return v
 
     def set_cfg(self, cfg):

@@ -119,8 +119,10 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 3. **Hinge** (`headMap`): skull evaluated twice, upper rotated up `UP_ANG*mouth` (0.48) about `HINGE`, jaw
    down `JAW_ANG*mouth` (0.2); each half cut by the hinge surface `y = HINGE.y − DROOP·x²` (downturned mouth,
    open or closed), cut faces = mouth material. The palate and jaw floor form the cavity (it closes at the
-   hinge); only cheek webs (outer walls of a sack bent by the same curve, |x| > `WEB_X`) close the
-   corners, in mouth-lining color. Mouth materials darken with depth toward the hinge.
+   hinge). At the corners the two halves smooth-union (`smin`, k = `CORNER_BLEND`·mouth, ramping in over
+   |x| 0.10–0.26): a rounded lens-shaped opening with fabric corners. Tongue sunk into the jaw floor, set
+   back. Mouth materials darken with depth toward the hinge.
+   Diagnostics: `GpuPuppet.debug_view` 1 = flat false color per material, 2 = depth (red = t − (F − 0.5)).
 4. **Fleece shading** `shade`: sRGB→linear albedo × fiber noise; bumped normal; wrap diffuse key with soft
    shadow (28-step SDF march), hemispheric fill × AO; grazing sheen instead of specular. Only eyes, glasses,
    headphones and buttons get a highlight. Closed mouth = stitched line along the hinge, bent by `corners`.
@@ -134,8 +136,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Rule | What broke without it |
 |---|---|
 | Closed mouth line XOR open hinge, single threshold `MOUTH_OPEN` (Python zeroes `mouth` below it) | Two mouths at small openings |
-| Mouth sack x-radius ≥ jowly head half-width (0.275) and bent by `DROOP` like the hinge | Background visible through the corners of the open mouth when turned |
-| Only the sack's outer walls (`WEB_X` 0.23); middle open; `mouth` check | A full sack bulged forward: a convex lit "red pillow" in the mouth (middle/edge 1.13 → 0.98) |
+| Mouth corners must be closed (now by the corner blend; `holes` check) | Background visible through the corners of the open mouth when turned |
+| No filler in the mouth gap; corners closed by blending the lips (`CORNER_BLEND`); `mouth` check measures depth through the opening (0.212 vs 0.067 for the old pillow) | A sack bulged forward ("red pillow"); its offcut floated as a lump; flat web walls read as skin flaps |
 | March out of steps while still inside the bound = hit, not miss | Rays skimming the lip edge ran out of 160 steps → partial-alpha see-through specks in the open mouth |
 | Exposure: front-lit face ≈ albedo (key 0.88, fill 0.3); `felt` check counts clipped skin | Skin red channel clipped on 21k px: hot plastic look |
 | No specular on felt materials (`isFelt`) | Plastic look (owner's stated failure mode) |

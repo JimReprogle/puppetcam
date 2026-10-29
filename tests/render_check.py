@@ -17,7 +17,7 @@ Checks (each one exists because the bug it guards against actually shipped once)
   style     - auto-style facial-hair and color decisions; command-line switches override them
   hairline  - --hairline types differ as named (widow/straight > receding > bald)
   roll      - the torso tilts the same way as the head, pinned at the base of the neck
-  mouth     - the open mouth is a cavity, not a forward bulge (a full mouth sack read as a red pillow)
+  mouth     - the open mouth is a cavity: depth through the opening well behind the lips (a sack read as a red pillow)
   timing    - GPU head/body render cost (report only)
 """
 import argparse
@@ -246,17 +246,22 @@ def check_hairline(r):
 
 
 def check_mouth(r):
-    """The open mouth is a cavity: facing the camera its middle must not be brighter than its sides.
-    A full mouth sack bulged forward into a lit "red pillow" (middle/edge 1.13; concave ~0.98)."""
-    c, a, _ = r["g"].head(state(0.9))
-    hsv = cv2.cvtColor(c, cv2.COLOR_BGR2HSV)
-    red = (((hsv[..., 0] < 8) | (hsv[..., 0] > 170)) & (hsv[..., 1] > 120) & (a > 0.9))
-    xs = np.nonzero(red)[1]
-    cx, w = int(np.median(xs)), int(xs.max() - xs.min())
-    col = np.abs(np.arange(c.shape[1])[None, :] - cx)
-    v = hsv[..., 2].astype(float)
-    ratio = v[red & (col < 0.15 * w)].mean() / v[red & (col > 0.35 * w)].mean()
-    return ratio < 1.05, f"open mouth middle/edge brightness {ratio:.2f} (concave < 1.05)"
+    """The open mouth is a cavity: down the centre line, the surface seen through the opening must lie
+    well behind the lips. A sack in the gap bulged forward into a lit "red pillow" (and brightness proxies
+    for this misread shadowed corners, so measure depth directly with the depth debug view)."""
+    g = r["g"]
+    worst = 9.0
+    for yaw, pitch in ((0, 0), (20, -15), (-20, 10)):
+        st = state(0.9, yaw, pitch)
+        c, a, n = g.head(st)
+        g.debug_view = 2
+        d, _, _ = g.head(st)
+        g.debug_view = 0
+        depth = (pg.F_HEAD - 0.5) + d[..., 2].astype(np.float32) / 255.0
+        x = int(round(n[0]))
+        col = depth[int(n[1]) + 20: int(n[1]) + 200, x - 2: x + 3].mean(1)
+        worst = min(worst, float(col.max() - np.percentile(col, 10)))
+    return worst > 0.08, f"opening depth behind the lips (head units, worst pose): {worst:.3f} (> 0.08)"
 
 
 def check_roll(r):
