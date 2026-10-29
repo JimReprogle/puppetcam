@@ -11,6 +11,8 @@ Checks (each one exists because the bug it guards against actually shipped once)
   nose      - the CPU-projected nose point lands on the rendered nose (it pins the puppet to your face)
   felt      - no blown-out highlights on fabric: fleece is matte (the "plastic" failure)
   body      - torso interior is fully opaque
+  erase     - after the camera moves, the plate re-aligns so the erased person leaves no ghost
+              (a tilted monitor webcam once pasted a shifted room into the silhouette)
   timing    - GPU head/body render cost (report only)
 """
 import argparse
@@ -135,6 +137,38 @@ def check_body(r):
     return worst == 0, f"max see-through pixels inside torso: {worst}"
 
 
+def check_erase(r):
+    """Synthetic room; the camera then tilts/shifts (known homography) and a person stands in front.
+    Erasing with the stale plate pastes the wrong patch of room; the aligned plate must match."""
+    rng = np.random.default_rng(3)
+    w, h = 1280, 720
+    room = cv2.GaussianBlur(rng.integers(60, 200, (h, w, 3), dtype=np.uint8), (0, 0), 1.5)
+    for _ in range(140):                                   # furniture-like edges for the matcher
+        x, y = int(rng.integers(0, w - 60)), int(rng.integers(0, h - 60))
+        cv2.rectangle(room, (x, y), (x + int(rng.integers(20, 160)), y + int(rng.integers(20, 120))),
+                      tuple(int(v) for v in rng.integers(0, 255, 3)), -1)
+    moved = np.array([[0.995, -0.03, 24.0], [0.02, 0.99, 70.0], [0.0, 0.0, 1.0]])
+    truth = cv2.warpPerspective(room, moved, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    person = np.zeros((h, w), np.float32)
+    cv2.ellipse(person, (640, 520), (230, 330), 0, 0, 360, 1.0, -1)
+    frame = truth.copy()
+    frame[person > 0.5] = (40, 50, 70)
+    inside = cv2.erode((person > 0.5).astype(np.uint8), np.ones((25, 25), np.uint8)) > 0
+
+    e = p.Eraser(w, h, "/nonexistent/plate.png")
+    e._set_plate(room)
+    stale = np.median(cv2.absdiff(e.apply(frame.copy(), person), truth).max(-1)[inside])
+    fit = e.align(frame, person)
+    if fit is None:
+        return False, f"align found no fit (stale residual {stale:.0f})"
+    e.use_aligned(fit)
+    fixed = np.median(cv2.absdiff(e.apply(frame.copy(), person), truth).max(-1)[inside])
+    # no churn: once aligned, a static camera must not keep swapping in new (noisier) fits
+    churn = e.align(frame, person) is not None
+    return fixed < 6 and not churn, (f"residual inside the silhouette: stale plate {stale:.0f}, aligned {fixed:.0f} "
+                                     f"(limit 6); re-fit on a static view: {churn}")
+
+
 def timing(r):
     st = state(0.5, 15, 5, (0.3, 0.0), 0.2)
     r["g"].head(st)  # warm-up
@@ -172,7 +206,8 @@ def main():
          "bare": renderer(dict(CFG, headphones=False, glasses=False))}
     ok_all = True
     for name, fn in (("holes", check_holes), ("strays", check_strays), ("smooth", check_smooth),
-                     ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("timing", timing)):
+                     ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("erase", check_erase),
+                     ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok
         print(f"[{'PASS' if ok else 'FAIL'}] {name:7s} {msg}")

@@ -170,8 +170,65 @@ class Eraser:
                 print(f"ignoring {path}: camera size changed, press b to recapture")
 
     def _set_plate(self, img):
-        self.plate = img.copy()                       # uint8; quarter-res copy for the gain match
+        # plate0 = as captured; every alignment warps plate0 (never the warped plate), so fits don't compound
+        self.plate0, self.H = img.copy(), np.eye(3)
+        self._use(self.plate0)
+
+    def _use(self, img):
+        self.plate = img                              # uint8; quarter-res copy for the gain match
         self.plate_q = cv2.resize(img, (self.w // 4, self.h // 4), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+    def align(self, frame, person):
+        """Fit the captured plate to the live view (camera bumped or tilted since the capture): ORB features
+        on background pixels only, at half res, RANSAC homography. Reads only plate0/H, so it is safe on a
+        worker thread. Returns (warped_plate, H, plate0), or None when there's no trustworthy fit or it
+        doesn't beat the current plate by 20 % and 3 levels on clear background (camera hasn't moved)."""
+        plate0, s = self.plate0, 0.5
+        g0 = cv2.cvtColor(cv2.resize(plate0, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        g1 = cv2.cvtColor(cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        clear = cv2.resize(person, (g1.shape[1], g1.shape[0]), interpolation=cv2.INTER_AREA) < 0.05
+        clear = cv2.erode(clear.astype(np.uint8) * 255, np.ones((15, 15), np.uint8))   # off the person's edge
+        orb = cv2.ORB_create(1500)
+        k0, d0 = orb.detectAndCompute(g0, None)
+        k1, d1 = orb.detectAndCompute(g1, clear)
+        if d0 is None or d1 is None:
+            return None
+        m = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(d0, d1)
+        if len(m) < 40:
+            return None
+        src = np.float32([k0[x.queryIdx].pt for x in m]) / s
+        dst = np.float32([k1[x.trainIdx].pt for x in m]) / s
+        H, inl = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
+        if H is None or inl.sum() < 40 or inl.mean() < 0.4:
+            return None
+        det = float(np.linalg.det(H[:2, :2]))
+        if not 0.6 < det < 1.6:                       # a camera tilt/shift, not a wild fit
+            return None
+        warped = cv2.warpPerspective(plate0, H, (self.w, self.h), borderMode=cv2.BORDER_REPLICATE)
+        # adopt only a clearly better match on clear background. Fits on a static camera scatter 1-7 px;
+        # swapping each one in would make the erased patch jiggle once a second
+        qs = (self.w // 4, self.h // 4)
+        fq = cv2.resize(frame, qs, interpolation=cv2.INTER_AREA)
+        bg = cv2.resize(person, qs, interpolation=cv2.INTER_AREA) < 0.05
+
+        def err(img):
+            return float(np.median(cv2.absdiff(fq, cv2.resize(img, qs, interpolation=cv2.INTER_AREA)).max(-1)[bg]))
+
+        if bg.sum() < 500:
+            return None
+        cur = err(self.plate)
+        if err(warped) > min(0.8 * cur, cur - 3.0):     # at least 20 % and 3 levels better
+            return None
+        return warped, H, plate0
+
+    def use_aligned(self, fit):
+        """Adopt a fit from align(); refused if the plate was recaptured (b) while it was computing."""
+        warped, H, src = fit
+        if src is not self.plate0:
+            return False
+        self.H = H
+        self._use(warped)
+        return True
 
     def grab(self, frame):
         self._set_plate(frame)
@@ -433,6 +490,9 @@ def main():
     # the GPU puppet lives on one worker thread: created there, and every head/body render runs there
     renderer, pending, body_job = ThreadPoolExecutor(1), None, None
     gpu = renderer.submit(GpuPuppet, cfg, S, PADT, OUT_H, MOUTH_OPEN).result()
+    # the camera can be bumped or tilted after the plate is captured; re-fit the plate about once a
+    # second on its own worker (~90 ms) or the erased silhouette shows a shifted room (a "ghost")
+    aligner, align_job, frame_i = ThreadPoolExecutor(1), None, 0
 
     with pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR) as vcam:
         print(f"virtual camera: {vcam.device}")
@@ -442,6 +502,7 @@ def main():
         try:
             while True:
                 prof.start()
+                frame_i += 1
                 if grabber is not None:
                     seq, ok, frame, t_cap = grabber.next(seq)
                 else:
@@ -467,7 +528,14 @@ def main():
                             xs = [q.x * w for q in res.face_landmarks[0]]
                             ys = [q.y * h for q in res.face_landmarks[0]]
                             box = (min(xs), min(ys), max(xs), max(ys))
-                        frame = eraser.apply(frame, eraser.person_mask(conf, box))
+                        person = eraser.person_mask(conf, box)
+                        if align_job is not None and align_job.done():
+                            fit, align_job = align_job.result(), None
+                            if fit is not None and eraser.use_aligned(fit):
+                                print("camera moved: empty-room plate re-aligned")
+                        if align_job is None and frame_i % 30 == 0:
+                            align_job = aligner.submit(eraser.align, frame.copy(), person.copy())
+                        frame = eraser.apply(frame, person)
                     prof.lap("erase")
 
                 if res.face_landmarks:
@@ -578,6 +646,7 @@ def main():
             if grabber is not None:
                 grabber.stop()
             renderer.shutdown(cancel_futures=True)
+            aligner.shutdown(cancel_futures=True)
         prof.report()
     landmarker.close()
     if segmenter is not None:

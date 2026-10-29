@@ -48,6 +48,9 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
 4. `Eraser.apply`: `ImageSegmenter` confidence mask → quarter-res mask → dilate/feather → replace person
    pixels with `empty_room.png`, per-channel gain-matched to current exposure on clear background.
    Mask polarity is auto-detected once against the face box.
+   **Plate alignment**: about once a second, `Eraser.align` (own worker, ~90 ms) fits the as-captured
+   `plate0` to the live view with ORB on clear background + RANSAC homography, and the fit is adopted
+   only if it beats the current plate by ≥20 % and ≥3 levels (median |frame−plate| on clear background).
 5. `measure()` → pose `(cx, cy, fh, roll, yaw, pitch, nose_x, nose_y)` and expression
    `(mouth, lid, gaze_x, gaze_y, brow_up, brow_down, corners)`; both EMA-smoothed (`Smooth`).
    First 30 detections = neutral yaw/pitch calibration (`c` to redo).
@@ -113,6 +116,9 @@ Head renders at 2× supersampling; body at 1× (`BODY_UNIT`=300 px/unit, main re
 | Body rigidly attached under head (`--body-follow 1`), neck length from 3D `fh`, clamp ±3 % | Stretchy neck when sitting up |
 | `--neck` default 0.45; neck cylinder reaches 1.0 body units, sprite top `BODY_TOP` 1.06 | Collar hidden behind the beard (head parked on the shoulders) |
 | Composite/shadow warps limited to ROI | 36 ms full-frame warps |
+| Plate re-aligned to the live view; always warp `plate0`, never the warped plate | Camera tilted after `b`: erased silhouette showed a shifted room = semi-transparent "ghost" of the person |
+| Adopt a new plate fit only on a real error improvement, not on "fit moved" | Static-camera fits scatter 1–7 px; swapping each in made the erased patch jiggle every second |
+| `use_aligned` refuses fits computed from a different `plate0` | A fit in flight during `b` would warp the old plate over the new one |
 
 Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 
@@ -162,8 +168,10 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 
 - Roll gain / roll lock option (owner flagged head tilt as possibly exaggerated).
 - `plaid-gray` should either become a real plaid texture or be renamed.
-- Erase leaks seen live 2026-10-29: real shirt at the shoulder edge outside the puppet torso, pale smear
-  where the plate (door open) differs from the room. Segmenter coverage / plate freshness, not the renderer.
+- Erase leaks seen live 2026-10-29 (after the alignment fix): real shirt at the frame edge where the
+  segmenter misses it; faint outline on the frosted door glass where local brightness differs from the
+  plate (global gain can't fix local lighting). Candidates: refresh plate pixels from clear background each
+  frame; local (tiled) gain.
 - Arms/hands via PoseLandmarker/HandLandmarker exist in mediapipe 1.2.0 — deferred for speed.
 
 ## Design guardrails
