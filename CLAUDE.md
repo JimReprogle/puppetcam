@@ -91,14 +91,17 @@ Render target rgba8 (premultiplied), read back, downsampled as uint8, then unpre
 Head renders at 1.5× supersampling (same look as 2× at output size; 2× starved the GPU segmenter); body at 1× (`BODY_UNIT`=300 px/unit, main rescales).
 
 1. **Head shape** `headBase`: mix(ellipsoid, rounded box) by `--pez`, height by `--long`, wider at the jaw.
-   `skull` smooth-unions brow ridge, cheeks, chin, nose; subtracts nostrils; raises the hair cap (`hairAmt`:
-   sides/back to the nape, bald dome over the front crown).
+   `skull` smooth-unions brow ridge, cheeks, chin, jowls (sagging beside the chin), nose; subtracts
+   nostrils; raises the hair cap (`hairAmt`: full head of hair, front hairline at the forehead top).
 2. **Upper parts** (ride the upper head, never cut): ping-pong eyes, felt lid shells (edge height from
-   `lid`), fur brows (`brow` up/down), mustache, glasses (rings, bridge, temples), headphones (band, sliders,
-   cups, pads). **Lower parts**: goatee (tapered, fur), tongue.
-3. **Hinge** (`headMap`): skull evaluated twice, upper rotated up `UP_ANG*mouth` about `HINGE`, jaw down
-   `JAW_ANG*mouth`; each half cut by the hinge plane, cut faces = mouth material; a mouth sack (dark red
-   centre, darker-skin cheek web at the sides) fills the gap.
+   `lid`), brows, mustache, glasses (rings, bridge, temples), headphones (band, sliders, cups, pads).
+   **Brows are hair, not fleece**: `BROW_LOCKS`=24 tapered two-segment locks along the brow line, growing
+   per `browFlow` (up at the inner end, drooping over the eye outside); shaded with strand striations
+   across the flow, per-lock tone, dark roots, and a Kajiya-Kay sheen. **Lower parts**: goatee, tongue.
+3. **Hinge** (`headMap`): skull evaluated twice, upper rotated up `UP_ANG*mouth` (0.48) about `HINGE`, jaw
+   down `JAW_ANG*mouth` (0.2); each half cut by the hinge surface `y = HINGE.y − DROOP·x²` (downturned mouth,
+   open or closed), cut faces = mouth material; a mouth sack bent by the same curve (dark red centre,
+   darker-skin cheek web at the sides) fills the gap.
 4. **Fleece shading** `shade`: sRGB→linear albedo × fiber noise; bumped normal; wrap diffuse key with soft
    shadow (28-step SDF march), hemispheric fill × AO; grazing sheen instead of specular. Only eyes, glasses,
    headphones and buttons get a highlight. Closed mouth = stitched line along the hinge, bent by `corners`.
@@ -112,7 +115,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Rule | What broke without it |
 |---|---|
 | Closed mouth line XOR open hinge, single threshold `MOUTH_OPEN` (Python zeroes `mouth` below it) | Two mouths at small openings |
-| Mouth sack x-radius ≥ head half-width (0.258) | Background visible through the side of the open mouth when turned |
+| Mouth sack x-radius ≥ jowly head half-width (0.275) and bent by `DROOP` like the hinge | Background visible through the corners of the open mouth when turned |
+| March out of steps while still inside the bound = hit, not miss | Rays skimming the lip edge ran out of 160 steps → partial-alpha see-through specks in the open mouth |
 | Exposure: front-lit face ≈ albedo (key 0.88, fill 0.3); `felt` check counts clipped skin | Skin red channel clipped on 21k px: hot plastic look |
 | No specular on felt materials (`isFelt`) | Plastic look (owner's stated failure mode) |
 | `nose_point` mirrors the shader's hinge/rotation/camera; `nose` check | Puppet slides sideways against the face |

@@ -43,8 +43,9 @@ const M_WEB = 13.0;
 const M_NECK = 14.0;
 
 const HINGE = vec3f(0.0, -0.165, -0.06);
-const UP_ANG = 0.38;
-const JAW_ANG = 0.14;
+const UP_ANG = 0.48;
+const JAW_ANG = 0.2;
+const DROOP = 0.9;      // hinge line drop toward the mouth corners (downturned mouth)
 const EYE_R = 0.056;
 const EYE_C = vec3f(0.082, 0.07, 0.175);
 
@@ -139,7 +140,7 @@ fn headBase(q: vec3f) -> f32 {
     let hy = 0.31 + 0.06 * g_long;
     var c = q - vec3f(0.0, -0.03, 0.0);
     let t = clamp(-c.y / hy, -1.0, 1.0);
-    c.x = c.x / (1.0 + 0.07 * t);                 // slightly wider at the jaw
+    c.x = c.x / (1.0 + 0.12 * t);                 // heavier, wider at the jaw
     let e = sdEllipsoid(c, vec3f(0.25, hy, 0.21));
     let b = sdRoundBox(c, vec3f(0.245, hy, 0.205), 0.13);
     return mix(e, b, g_pez) * 0.93;
@@ -160,6 +161,8 @@ fn skull(q: vec3f) -> vec2f {
     let ax = vec3f(abs(q.x), q.y, q.z);
     d = smin(d, sdSphere(ax - vec3f(0.13, -0.10, 0.14), 0.085), 0.05);
     d = smin(d, sdEllipsoid(q - vec3f(0.0, -0.31, 0.12), vec3f(0.11, 0.08, 0.09)), 0.05);
+    // jowls: heavy cheek masses sagging beside the chin, below the mouth corners
+    d = smin(d, sdEllipsoid(ax - vec3f(0.165, -0.27, 0.11), vec3f(0.1, 0.12, 0.09)), 0.06);
     d = smin(d, sdEllipsoid(q - vec3f(0.0, -0.025, 0.24), vec3f(0.08, 0.09, 0.085)), 0.03);
     d = max(d, -sdSphere(ax - vec3f(0.032, -0.1, 0.275), 0.015));
     let h = hairAmt(q);
@@ -167,6 +170,80 @@ fn skull(q: vec3f) -> vec2f {
         d -= h * (0.014 + 0.006 * vnoise(q * vec3f(70.0, 22.0, 70.0)));
     }
     return vec2f(d, select(M_SKIN, M_HAIR, h > 0.5));
+}
+
+// brow line ends for the +x side (mirrored): brow-up raises it, brow-down pulls the inner end down
+fn browInner() -> vec3f {
+    return vec3f(0.03, 0.15 + 0.03 * g_brow.x - 0.035 * g_brow.y, 0.232);
+}
+
+fn browOuter() -> vec3f {
+    return vec3f(0.15, 0.158 + 0.03 * g_brow.x, 0.2);
+}
+
+// hair growth direction along the brow (t: 0 inner .. 1 outer): out and up at the inner end,
+// drooping over the eye at the outer end. Shared by the geometry and the strand shading
+fn browFlow(t: f32) -> vec3f {
+    return normalize(vec3f(1.0, mix(0.6, -0.45, t), mix(0.3, 0.1, t)));
+}
+
+// bushy brow as clumps of hair: each clump a tapered, slightly curved lock from the brow line.
+// Distance for one side (ax = |x| local point); a bounding ellipsoid skips the loop when far away
+// tapered capsule: radius ra at a, rb at b
+fn sdTaper(p: vec3f, a: vec3f, b: vec3f, ra: f32, rb: f32) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - mix(ra, rb, h);
+}
+
+const BROW_LOCKS = 24;
+
+// distance to brow lock i; locks are spread along the brow line, each a two-segment curve that
+// thins to a hair-fine tip
+fn browLock(ax: vec3f, i: i32) -> f32 {
+    let a = browInner();
+    let b = browOuter();
+    let h = hash3(vec3f(f32(i) * 1.37, 2.1, 0.7));
+    let h2 = hash3(vec3f(f32(i) * 0.91, 5.3, 1.9));
+    let t = clamp((f32(i) + (h2 - 0.5) * 1.6) / f32(BROW_LOCKS - 1), 0.0, 1.0);
+    let root = mix(a, b, t) + vec3f(0.0, (h - 0.5) * 0.02, (h2 - 0.5) * 0.008);
+    let dir = normalize(browFlow(t) + vec3f(0.0, (h - 0.5) * 0.5, (h2 - 0.5) * 0.2));
+    let len = mix(0.045, 0.09, t) * (0.7 + 0.6 * h2);
+    let mid = root + dir * len * 0.5 + vec3f(0.0, 0.008, 0.004);
+    let tip = root + dir * len + vec3f(0.0, -0.016 * t - 0.006 * h, 0.0);
+    return min(sdTaper(ax, root, mid, 0.0075, 0.0045), sdTaper(ax, mid, tip, 0.0045, 0.0012));
+}
+
+// bushy brow as many fine locks. Distance for one side (ax = |x| local point); a bounding
+// ellipsoid skips the loop when far away
+fn browStrands(ax: vec3f) -> f32 {
+    let c = 0.5 * (browInner() + browOuter()) + vec3f(0.03, 0.0, 0.0);
+    let bound = sdEllipsoid(ax - c, vec3f(0.135, 0.08, 0.07));
+    if (bound > 0.02) {
+        return bound;
+    }
+    var d = 1e3;
+    for (var i = 0; i < BROW_LOCKS; i++) {
+        d = min(d, browLock(ax, i));
+    }
+    return d;
+}
+
+// which lock is nearest (for per-lock color) and how far along it we are (0 root .. 1 tip, approx)
+fn browLockAt(ax: vec3f) -> vec2f {
+    var best = 1e3;
+    var idx = 0;
+    for (var i = 0; i < BROW_LOCKS; i++) {
+        let d = browLock(ax, i);
+        if (d < best) {
+            best = d;
+            idx = i;
+        }
+    }
+    let a = browInner();
+    let t = clamp((ax.x - mix(a.x, browOuter().x, f32(idx) / f32(BROW_LOCKS - 1))) / 0.08, 0.0, 1.0);
+    return vec2f(f32(idx), t);
 }
 
 // parts that ride on the upper head (never cut by the hinge)
@@ -178,12 +255,7 @@ fn upperParts(q: vec3f) -> vec2f {
     let edge = EYE_C.y + (1.0 - 2.0 * g_lid) * EYE_R;
     let shell = abs(sdSphere(ax - EYE_C, EYE_R + 0.004)) - 0.0035;
     r = U(r, vec2f(max(shell, edge - q.y), M_LID));
-    // brows: fur capsules, raised by brow-up, inner ends pulled down by brow-down
-    let by = 0.158 + 0.03 * g_brow.x;
-    let bi = by - 0.035 * g_brow.y;
-    var brow = sdCapsule(ax, vec3f(0.035, bi, 0.232), vec3f(0.145, by + 0.004, 0.203), 0.019);
-    brow -= 0.006 * vnoise(q * vec3f(25.0, 90.0, 60.0));
-    r = U(r, vec2f(brow, M_BROW));
+    r = U(r, vec2f(browStrands(ax), M_BROW));
     // mustache: two drooping lobes under the nose
     var mu = smin(sdCapsule(ax, vec3f(0.008, -0.122, 0.262), vec3f(0.112, -0.162, 0.205), 0.028),
                   sdSphere(ax - vec3f(0.0, -0.118, 0.255), 0.03), 0.02);
@@ -234,18 +306,21 @@ fn headMap(pw: vec3f) -> vec2f {
     let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);
     let ql = HINGE + rotX(q - HINGE, -JAW_ANG * g_mouth);
     let su = skull(qu);
-    let cutU = HINGE.y - qu.y;
+    // the hinge line curves down toward the corners: a downturned mouth, closed or open
+    let cutU = HINGE.y - DROOP * qu.x * qu.x - qu.y;
     var r = vec2f(max(su.x, cutU), select(su.y, M_MOUTH, cutU > su.x));
     r = U(r, upperParts(qu));
     let sl = skull(ql);
-    let cutL = ql.y - HINGE.y;
+    let cutL = ql.y - (HINGE.y - DROOP * ql.x * ql.x);
     r = U(r, vec2f(max(sl.x, cutL), select(sl.y, M_MOUTH, cutL > sl.x)));
     r = U(r, lowerParts(ql));
     if (g_mouth > 0.0) {
         // mouth sack between palate and jaw; its outer sides are the cheek web
         let sk = vec3f(0.0, HINGE.y + 0.03 * g_mouth, -0.02);
-        // as wide as the head: narrower and the open mouth is see-through from an angle
-        let sack = sdEllipsoid(q - sk, vec3f(0.258, 0.012 + 0.075 * g_mouth, 0.19));
+        // bent down at the corners like the hinge line, and as wide as the jowly head: otherwise the
+        // open mouth is see-through at the corners and cracks along the jaw floor
+        let qs = vec3f(q.x, q.y + DROOP * q.x * q.x, q.z);
+        let sack = sdEllipsoid(qs - sk, vec3f(0.275, 0.014 + 0.1 * g_mouth, 0.19)) * 0.8;
         r = U(r, vec2f(sack, select(M_MOUTH, M_WEB, abs(q.x) > 0.17)));
     }
     return r;
@@ -380,7 +455,27 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
         q = rotY(p, -g_yaw) * 0.6;
     }
     var alb = albedo(mat);
-    let felt = isFelt(mat);
+    let felt = isFelt(mat) && mat != M_BROW;          // brows are real-looking hair, not fleece
+    var hairT = vec3f(0.0);
+    if (mat == M_BROW) {
+        // hair strands: fine light/dark striations across the growth direction, long along it
+        let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);   // brows ride the upper head
+        let side = select(-1.0, 1.0, qu.x > 0.0);
+        let a = browInner();
+        let t = clamp((abs(qu.x) - a.x) / (browOuter().x - a.x), 0.0, 1.0);
+        var T = browFlow(t);
+        T.x *= side;
+        let across = normalize(cross(T, vec3f(0.0, 0.0, 1.0)));
+        let s = dot(qu, across) * 520.0;
+        let along = dot(qu, T) * 40.0;
+        let st = vnoise(vec3f(s, along, 0.5)) * 0.7 + vnoise(vec3f(s * 2.1, along * 1.5, 4.0)) * 0.3;
+        // each lock its own shade of gray/white; darker at the root, lighter toward the tip
+        let lk = browLockAt(vec3f(abs(qu.x), qu.y, qu.z));
+        let tone = 0.75 + 0.45 * hash3(vec3f(lk.x * 3.1, 0.3, 7.7));
+        alb *= (0.5 + 0.75 * st) * tone * mix(0.6, 1.15, lk.y);
+        // world-space strand tangent for the sheen: undo the hinge, then pitch and yaw
+        hairT = rotY(rotX(rotX(T, -UP_ANG * g_mouth), g_pitch), g_yaw);
+    }
     if (felt) {
         // fleece: fine pile + coarse mottle in color, fiber bumps in the normal
         let fq = q * 150.0;
@@ -388,7 +483,7 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
         let b = vec3f(vnoise(fq + vec3f(7.1, 0.0, 0.0)), vnoise(fq + vec3f(0.0, 3.7, 0.0)),
                       vnoise(fq + vec3f(0.0, 0.0, 5.3))) - vec3f(0.5);
         n = normalize(n + 0.45 * b);
-        if (mat == M_HAIR || mat == M_BEARD || mat == M_BROW) {
+        if (mat == M_HAIR || mat == M_BEARD) {
             // strands: streaky along the growth direction
             alb *= 0.65 + 0.6 * vnoise(q * vec3f(260.0, 40.0, 260.0));
         }
@@ -403,7 +498,7 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
     }
     if (mat == M_SKIN && g_closed > 0.5 && g_mode < 0.5) {
         // closed mouth: a stitched line along the hinge, corners bent by smile/frown
-        let line = HINGE.y + g_corners * 0.035 * (q.x * q.x) / (0.12 * 0.12);
+        let line = HINGE.y - DROOP * q.x * q.x + g_corners * 0.035 * (q.x * q.x) / (0.12 * 0.12);
         let lm = (1.0 - smoothstep(0.0025, 0.0055, abs(q.y - line))) *
                  (1.0 - smoothstep(0.10, 0.12, abs(q.x))) * smoothstep(0.12, 0.17, q.z);
         alb *= 1.0 - 0.8 * lm;
@@ -417,7 +512,11 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
     var col = alb * (0.88 * diff * mix(0.35, 1.0, sh) * vec3f(1.0, 0.97, 0.92) +
                      0.3 * ao * sky * vec3f(0.85, 0.9, 1.0) + 0.05 * ao);
     let ndv = max(dot(n, v), 0.0);
-    if (felt) {
+    if (mat == M_BROW) {
+        // Kajiya-Kay: hair shines in a band across the strands, not in a spot
+        let th = dot(hairT, normalize(L + v));
+        col += 0.22 * pow(sqrt(max(1.0 - th * th, 0.0)), 70.0) * sh * (alb + vec3f(0.25));
+    } else if (felt) {
         // velvet sheen: fibers catch light at grazing angles; no mirror highlight
         col += pow(1.0 - ndv, 2.5) * 0.4 * (alb * 0.7 + vec3f(0.05)) * ao;
     } else {
@@ -486,6 +585,11 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
         if (t > tEnd) {
             break;
         }
+    }
+    // out of steps while still inside the bounds = a ray creeping along a thin edge (the lip of the
+    // open mouth at a grazing angle), not a miss; treating it as a miss made see-through specks
+    if (!hit && t <= tEnd) {
+        hit = true;
     }
     if (hit) {
         let p = ro + rd * t;

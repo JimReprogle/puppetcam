@@ -17,7 +17,7 @@ import wgpu
 SHADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "puppet.wgsl")
 F_HEAD = 3.0                          # camera distance in head units (mild perspective)
 HINGE = np.array((0.0, -0.165, -0.06))
-UP_ANG = 0.38                         # must match puppet.wgsl
+UP_ANG = 0.48                         # must match puppet.wgsl
 NOSE = np.array((0.0, -0.025, 0.325))  # nose tip, head local
 BODY_UNIT = 300                       # body sprite px per body unit (main rescales)
 BODY_W, BODY_TOP, BODY_BOT = 3.2, 1.06, 2.5   # sprite: width, above / below the collar (units)
