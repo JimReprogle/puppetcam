@@ -146,13 +146,11 @@ fn headBase(q: vec3f) -> f32 {
 }
 
 fn hairAmt(q: vec3f) -> f32 {
-    // sides and back down to the nape; bald dome over the forehead and front crown
+    // full head of hair: sides and back down to the nape, front hairline where the forehead turns
+    // into the crown, with only slight recession at the temples
     let front = smoothstep(-0.02, 0.17, q.z);
-    let hl = mix(-0.14, 0.22 - 1.6 * q.x * q.x, front);
-    let side = smoothstep(-0.008, 0.008, q.y - hl);
-    let e = (q.x / 0.16) * (q.x / 0.16) + ((q.z - 0.19) / 0.16) * ((q.z - 0.19) / 0.16);
-    let bald = (1.0 - smoothstep(0.8, 1.05, e)) * smoothstep(0.0, 0.08, q.y);
-    return side * (1.0 - bald);
+    let hl = mix(-0.14, 0.245 - 1.1 * q.x * q.x, front);
+    return smoothstep(-0.008, 0.008, q.y - hl);
 }
 
 // sculpted felt head: dome, brow ridge, cheeks, chin, nose, nostrils, raised hair cap

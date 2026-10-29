@@ -18,6 +18,8 @@ empty_room.png          # created by pressing `b` in the preview
 
 ```bash
 python puppetcam.py --preview            # live, with preview window + tuning keys
+# new desk/room: the saved empty_room.png is detected as wrong within ~2 s and erase turns off;
+# in --preview press b, step out of frame for 5 s to capture this room (the file is overwritten)
 python tests/render_check.py             # offline checks; exit 0 = pass; PNG sheet in /tmp/puppetcam_check
 ```
 
@@ -121,6 +123,7 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Composite/shadow warps limited to ROI | 36 ms full-frame warps |
 | Plate re-aligned to the live view; always warp `plate0`, never the warped plate | Camera tilted after `b`: erased silhouette showed a shifted room = semi-transparent "ghost" of the person |
 | Adopt a new plate fit only on a real error improvement, not on "fit moved" | Static-camera fits scatter 1–7 px; swapping each in made the erased patch jiggle every second |
+| Plate dropped (erase off until `b`) when no re-fit exists and the exposure-matched error stays > `PLATE_MISMATCH` (35) on 2 checks; first check at frame 5 | A plate from another desk would paste that room into the silhouette (matching plate ≈ 15, other room 54–100) |
 | `use_aligned` refuses fits computed from a different `plate0` | A fit in flight during `b` would warp the old plate over the new one |
 | Multiclass segmenter, not `selfie_segmenter` | Head turned → single-class model dropped the torso (16 % coverage on one live frame, <80 % on 4 % of clip frames) → real shirt strips around the puppet |
 | Person = max of person classes, never 1 − background | 1 − background floors at 0.084 on empty room → zero "clear background" pixels → gain match and plate alignment silently stop |

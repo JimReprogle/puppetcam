@@ -36,7 +36,8 @@ OUT_H = S + PADT + PADB
 MAX_YAW, MAX_PITCH = math.radians(38), math.radians(25)
 MOUTH_OPEN = 0.06        # below this the mouth is a closed line, above it the head hinges
 BODY_TURN = 0.35        # torso yaw as a fraction of head yaw
-SEG_WAIT = 0.010        # s: longest the frame waits for its own person mask before using the last one
+PLATE_MISMATCH = 35.0   # plate match error (levels) above which, with no re-fit, it's another room
+SEG_WAIT = 0.010       # s: longest the frame waits for its own person mask before using the last one
 
 # BGR felt colors
 SKIN = {"light": (150, 180, 225), "medium": (105, 150, 210),
@@ -214,6 +215,7 @@ class Eraser:
     def _set_plate(self, img):
         # plate0 = as captured; every alignment warps plate0 (never the warped plate), so fits don't compound
         self.plate0, self.H = img.copy(), np.eye(3)
+        self.last_err, self.mismatches = None, 0
         self._use(self.plate0)
 
     def _use(self, img):
@@ -224,8 +226,26 @@ class Eraser:
         """Fit the captured plate to the live view (camera bumped or tilted since the capture): ORB features
         on background pixels only, at half res, RANSAC homography. Reads only plate0/H, so it is safe on a
         worker thread. Returns (warped_plate, H, plate0), or None when there's no trustworthy fit or it
-        doesn't beat the current plate by 20 % and 3 levels on clear background (camera hasn't moved)."""
-        plate0, s = self.plate0, 0.5
+        doesn't beat the current plate by 20 % and 3 levels on clear background (camera hasn't moved).
+        Also records last_err, the current plate's error, which update() uses to spot a wrong room."""
+        plate0, plate, s = self.plate0, self.plate, 0.5
+        if plate is None:
+            return None
+        # match error on clear background, exposure-compensated like apply(): ~15 for this room's plate,
+        # 54-100 for another room's
+        qs = (self.w // 4, self.h // 4)
+        fq = cv2.resize(frame, qs, interpolation=cv2.INTER_AREA).astype(np.float32)
+        bg = cv2.resize(person, qs, interpolation=cv2.INTER_AREA) < 0.05
+        if bg.sum() < 500:
+            self.last_err = None
+            return None
+
+        def err(img):
+            pq = cv2.resize(img, qs, interpolation=cv2.INTER_AREA).astype(np.float32)
+            gain = np.clip(fq[bg].mean(0) / np.maximum(pq[bg].mean(0), 1), 0.7, 1.4)
+            return float(np.median(np.abs(fq - pq * gain).max(-1)[bg]))
+
+        cur = self.last_err = err(plate)
         g0 = cv2.cvtColor(cv2.resize(plate0, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         g1 = cv2.cvtColor(cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         clear = cv2.resize(person, (g1.shape[1], g1.shape[0]), interpolation=cv2.INTER_AREA) < 0.05
@@ -249,19 +269,26 @@ class Eraser:
         warped = cv2.warpPerspective(plate0, H, (self.w, self.h), borderMode=cv2.BORDER_REPLICATE)
         # adopt only a clearly better match on clear background. Fits on a static camera scatter 1-7 px;
         # swapping each one in would make the erased patch jiggle once a second
-        qs = (self.w // 4, self.h // 4)
-        fq = cv2.resize(frame, qs, interpolation=cv2.INTER_AREA)
-        bg = cv2.resize(person, qs, interpolation=cv2.INTER_AREA) < 0.05
-
-        def err(img):
-            return float(np.median(cv2.absdiff(fq, cv2.resize(img, qs, interpolation=cv2.INTER_AREA)).max(-1)[bg]))
-
-        if bg.sum() < 500:
+        new = err(warped)
+        if new > min(0.8 * cur, cur - 3.0):             # at least 20 % and 3 levels better
             return None
-        cur = err(self.plate)
-        if err(warped) > min(0.8 * cur, cur - 3.0):     # at least 20 % and 3 levels better
-            return None
+        self.last_err = new
         return warped, H, plate0
+
+    def update(self, fit):
+        """Take an align() result on the main thread. Returns "aligned" when a better fit was adopted,
+        "mismatch" when the plate was dropped (no fit and still far off on two checks running: it's another
+        room, e.g. a different desk; erase stays off until b), else None."""
+        if fit is not None:
+            return "aligned" if self.use_aligned(fit) else None
+        if self.last_err is not None and self.last_err > PLATE_MISMATCH:
+            self.mismatches += 1
+            if self.mismatches >= 2:
+                self.plate = None
+                return "mismatch"
+        else:
+            self.mismatches = 0
+        return None
 
     def use_aligned(self, fit):
         """Adopt a fit from align(); refused if the plate was recaptured (b) while it was computing."""
@@ -585,9 +612,14 @@ def main():
                         person = eraser.person_mask(conf, box)
                         if align_job is not None and align_job.done():
                             fit, align_job = align_job.result(), None
-                            if fit is not None and eraser.use_aligned(fit):
+                            status = eraser.update(fit)
+                            if status == "aligned":
                                 print("camera moved: empty-room plate re-aligned")
-                        if align_job is None and frame_i % 30 == 0:
+                            elif status == "mismatch":
+                                print(f"empty-room plate doesn't match this room (error {eraser.last_err:.0f}): "
+                                      "erase is off. Run with --preview, press b, step out of frame")
+                        # first check ~5 frames in, so a plate from another desk is caught within ~1 s
+                        if align_job is None and frame_i % 30 == 5:
                             align_job = aligner.submit(eraser.align, frame.copy(), person.copy())
                         frame = eraser.apply(frame, person)
                     prof.lap("erase")

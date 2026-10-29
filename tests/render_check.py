@@ -163,10 +163,40 @@ def check_erase(r):
         return False, f"align found no fit (stale residual {stale:.0f})"
     e.use_aligned(fit)
     fixed = np.median(cv2.absdiff(e.apply(frame.copy(), person), truth).max(-1)[inside])
-    # no churn: once aligned, a static camera must not keep swapping in new (noisier) fits
-    churn = e.align(frame, person) is not None
+    # no churn: once aligned, a static camera must not keep swapping in new (noisier) fits,
+    # and a matching room must never be flagged as a mismatch
+    churn = False
+    for _ in range(3):
+        churn |= e.update(e.align(frame, person)) is not None
+    churn |= e.plate is None
     return fixed < 6 and not churn, (f"residual inside the silhouette: stale plate {stale:.0f}, aligned {fixed:.0f} "
-                                     f"(limit 6); re-fit on a static view: {churn}")
+                                     f"(limit 6); re-fit or drop on a static view: {churn}")
+
+
+def check_plate_mismatch(r):
+    """A plate from another desk can't be aligned; pasting it would put another room inside your
+    silhouette. It must be dropped (erase off until b) within two checks, not used."""
+    rng = np.random.default_rng(5)
+    w, h = 1280, 720
+
+    def room(seed):
+        g = np.random.default_rng(seed)
+        img = cv2.GaussianBlur(g.integers(60, 200, (h, w, 3), dtype=np.uint8), (0, 0), 1.5)
+        for _ in range(140):
+            x, y = int(g.integers(0, w - 60)), int(g.integers(0, h - 60))
+            cv2.rectangle(img, (x, y), (x + int(g.integers(20, 160)), y + int(g.integers(20, 120))),
+                          tuple(int(v) for v in g.integers(0, 255, 3)), -1)
+        return img
+
+    person = np.zeros((h, w), np.float32)
+    cv2.ellipse(person, (640, 520), (230, 330), 0, 0, 360, 1.0, -1)
+    frame = room(11)
+    frame[person > 0.5] = tuple(int(v) for v in rng.integers(30, 90, 3))
+    e = p.Eraser(w, h, "/nonexistent/plate.png")
+    e._set_plate(room(3))                                  # yesterday's desk
+    statuses = [e.update(e.align(frame, person)) for _ in range(2)]
+    dropped = e.plate is None and statuses[-1] == "mismatch"
+    return dropped, f"plate from another room dropped: {dropped} (statuses {statuses}, err {e.last_err})"
 
 
 def timing(r):
@@ -207,6 +237,7 @@ def main():
     ok_all = True
     for name, fn in (("holes", check_holes), ("strays", check_strays), ("smooth", check_smooth),
                      ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("erase", check_erase),
+                     ("plate", check_plate_mismatch),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok
