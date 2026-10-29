@@ -770,24 +770,32 @@ def cast_head_shadow(frame, head_alpha, M, body_alpha, bx0, by0, size):
     rx0, ry0, rx1, ry1, Mr = warp_roi(Ms, head_alpha.shape, frame.shape)
     if rx1 <= rx0 or ry1 <= ry0:
         return
-    sh = np.zeros((H, W), np.float32)
-    sh[ry0:ry1, rx0:rx1] = cv2.warpAffine(head_alpha, Mr, (rx1 - rx0, ry1 - ry0), flags=cv2.INTER_LINEAR,
-                                          borderValue=0)
-    recv = np.zeros((H, W), np.float32)               # where the body is
+    warped = cv2.warpAffine(head_alpha, Mr, (rx1 - rx0, ry1 - ry0), flags=cv2.INTER_LINEAR, borderValue=0)
     h, w = body_alpha.shape
     fx0, fy0, fx1, fy1 = max(0, bx0), max(0, by0), min(W, bx0 + w), min(H, by0 + h)
     if fx1 <= fx0 or fy1 <= fy0:
         return
-    recv[fy0:fy1, fx0:fx1] = body_alpha[fy0 - by0:fy1 - by0, fx0 - bx0:fx1 - bx0]
-    ys, xs = np.nonzero(sh[::4, ::4] > 0.01)
+    ys, xs = np.nonzero(warped[::4, ::4] > 0.01)
     if not ys.size:
         return
-    y0, y1 = max(0, ys.min() * 4 - 40), min(H, ys.max() * 4 + 60)
-    x0, x1 = max(0, xs.min() * 4 - 40), min(W, xs.max() * 4 + 60)
+    # every buffer below is window-sized, not frame-sized
+    y0, y1 = max(0, ry0 + ys.min() * 4 - 40), min(H, ry0 + ys.max() * 4 + 60)
+    x0, x1 = max(0, rx0 + xs.min() * 4 - 40), min(W, rx0 + xs.max() * 4 + 60)
+    sh = np.zeros((y1 - y0, x1 - x0), np.float32)
+    sy0, sx0, sy1, sx1 = max(y0, ry0), max(x0, rx0), min(y1, ry1), min(x1, rx1)
+    sh[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = warped[sy0 - ry0:sy1 - ry0, sx0 - rx0:sx1 - rx0]
+    recv = np.zeros_like(sh)                          # where the body is
+    qy0, qx0, qy1, qx1 = max(y0, fy0), max(x0, fx0), min(y1, fy1), min(x1, fx1)
+    if qy1 <= qy0 or qx1 <= qx0:
+        return
+    recv[qy0 - y0:qy1 - y0, qx0 - x0:qx1 - x0] = body_alpha[qy0 - by0:qy1 - by0, qx0 - bx0:qx1 - bx0]
     k = max(3.0, 0.03 * size)
-    shb = cv2.GaussianBlur(sh[y0:y1, x0:x1], (0, 0), k) * recv[y0:y1, x0:x1]
-    roi = frame[y0:y1, x0:x1].astype(np.float32)
-    frame[y0:y1, x0:x1] = (roi * (1 - 0.45 * shb[..., None])).astype(np.uint8)
+    # wide soft blur: do it at 1/4 res and upsample (same look, ~16x fewer pixels)
+    wq, hq = max(1, (x1 - x0) // 4), max(1, (y1 - y0) // 4)
+    blur = cv2.GaussianBlur(cv2.resize(sh, (wq, hq), interpolation=cv2.INTER_AREA), (0, 0), k / 4)
+    keep = 1.0 - 0.45 * cv2.resize(blur, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR) * recv
+    roi = frame[y0:y1, x0:x1]
+    frame[y0:y1, x0:x1] = cv2.blendLinear(roi, np.zeros_like(roi), keep, 1.0 - keep)
 
 
 def blit(frame, spr, alpha, x0, y0):
@@ -796,10 +804,9 @@ def blit(frame, spr, alpha, x0, y0):
     fx0, fy0, fx1, fy1 = max(0, x0), max(0, y0), min(W, x0 + w), min(H, y0 + h)
     if fx1 <= fx0 or fy1 <= fy0:
         return
-    s = spr[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0].astype(np.float32)
-    a = alpha[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0][..., None]
-    roi = frame[fy0:fy1, fx0:fx1].astype(np.float32)
-    frame[fy0:fy1, fx0:fx1] = (s * a + roi * (1 - a)).astype(np.uint8)
+    s = spr[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0]
+    a = np.ascontiguousarray(alpha[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0])
+    frame[fy0:fy1, fx0:fx1] = cv2.blendLinear(s, frame[fy0:fy1, fx0:fx1], a, 1.0 - a)
 
 
 def draw_neck(frame, skin_tex, fiber_tex, base, top, half_base, half_top):
@@ -838,13 +845,17 @@ class Eraser:
         if os.path.exists(path):
             img = cv2.imread(path)
             if img is not None and img.shape[:2] == (h, w):
-                self.plate = img.astype(np.float32)
+                self._set_plate(img)
                 print(f"loaded empty-room plate {path}")
             else:
                 print(f"ignoring {path}: camera size changed, press b to recapture")
 
+    def _set_plate(self, img):
+        self.plate = img.copy()                       # uint8; quarter-res copy for the gain match
+        self.plate_q = cv2.resize(img, (self.w // 4, self.h // 4), interpolation=cv2.INTER_AREA).astype(np.float32)
+
     def grab(self, frame):
-        self.plate = frame.astype(np.float32)
+        self._set_plate(frame)
         cv2.imwrite(self.path, frame)
         print(f"empty-room plate saved -> {self.path}")
 
@@ -867,8 +878,7 @@ class Eraser:
         bg = q < 0.05
         if bg.sum() > 200:   # exposure/white-balance drift: match plate to the frame on clear background
             fq = cv2.resize(frame, (self.w // 4, self.h // 4), interpolation=cv2.INTER_AREA)
-            pq = cv2.resize(self.plate, (self.w // 4, self.h // 4), interpolation=cv2.INTER_AREA)
-            gain = np.clip(fq[bg].astype(np.float32).mean(0) / np.maximum(pq[bg].mean(0), 1), 0.7, 1.4)
+            gain = np.clip(fq[bg].astype(np.float32).mean(0) / np.maximum(self.plate_q[bg].mean(0), 1), 0.7, 1.4)
         else:
             gain = np.ones(3, np.float32)
         hard = cv2.dilate(hard, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
@@ -876,10 +886,10 @@ class Eraser:
         ys, xs = np.nonzero(hard)
         y0, y1 = max(0, ys.min() * 4 - 8), min(self.h, ys.max() * 4 + 12)
         x0, x1 = max(0, xs.min() * 4 - 8), min(self.w, xs.max() * 4 + 12)
-        pm = cv2.resize(pmq, (self.w, self.h), interpolation=cv2.INTER_LINEAR)[y0:y1, x0:x1][..., None]
-        roi = frame[y0:y1, x0:x1].astype(np.float32)
-        plate = self.plate[y0:y1, x0:x1] * gain
-        frame[y0:y1, x0:x1] = np.clip(plate * pm + roi * (1 - pm), 0, 255).astype(np.uint8)
+        pm = cv2.resize(pmq, (self.w, self.h), interpolation=cv2.INTER_LINEAR)[y0:y1, x0:x1]
+        # uint8 end to end: saturating gain, then one weighted blend (no float32 frame copies)
+        plate = cv2.multiply(self.plate[y0:y1, x0:x1], (float(gain[0]), float(gain[1]), float(gain[2]), 0.0))
+        frame[y0:y1, x0:x1] = cv2.blendLinear(plate, frame[y0:y1, x0:x1], pm, 1.0 - pm)
         return frame
 
 
@@ -968,10 +978,9 @@ def composite(frame, canvas, alpha, M):
     if x1 <= x0 or y1 <= y0:
         return frame
     size = (x1 - x0, y1 - y0)
-    pc = cv2.warpAffine(canvas, Mr, size, flags=cv2.INTER_LINEAR, borderValue=0).astype(np.float32)
-    pa = cv2.warpAffine(alpha, Mr, size, flags=cv2.INTER_LINEAR, borderValue=0)[..., None]
-    roi = frame[y0:y1, x0:x1].astype(np.float32)
-    frame[y0:y1, x0:x1] = (pc * pa + roi * (1 - pa)).astype(np.uint8)
+    pc = cv2.warpAffine(canvas, Mr, size, flags=cv2.INTER_LINEAR, borderValue=0)
+    pa = cv2.warpAffine(alpha, Mr, size, flags=cv2.INTER_LINEAR, borderValue=0)
+    frame[y0:y1, x0:x1] = cv2.blendLinear(pc, frame[y0:y1, x0:x1], pa, 1.0 - pa)
     return frame
 
 
