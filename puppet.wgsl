@@ -25,6 +25,7 @@ var<private> g_glasses: f32;
 var<private> g_phones: f32;
 var<private> g_shoulders: f32;
 var<private> g_closed: f32;     // 1 when the mouth is a closed line
+var<private> g_mustache: f32;
 
 const M_SKIN = 0.0;
 const M_HAIR = 1.0;
@@ -257,11 +258,13 @@ fn upperParts(q: vec3f) -> vec2f {
     let shell = abs(sdSphere(ax - EYE_C, EYE_R + 0.004)) - 0.0035;
     r = U(r, vec2f(max(shell, edge - q.y), M_LID));
     r = U(r, vec2f(browStrands(ax), M_BROW));
-    // mustache: two drooping lobes under the nose
-    var mu = smin(sdCapsule(ax, vec3f(0.008, -0.122, 0.262), vec3f(0.112, -0.162, 0.205), 0.028),
-                  sdSphere(ax - vec3f(0.0, -0.118, 0.255), 0.03), 0.02);
-    mu -= 0.008 * vnoise(q * vec3f(90.0, 20.0, 90.0));
-    r = U(r, vec2f(mu, M_BEARD));
+    if (g_mustache > 0.5) {
+        // mustache: two drooping lobes under the nose
+        var mu = smin(sdCapsule(ax, vec3f(0.008, -0.122, 0.262), vec3f(0.112, -0.162, 0.205), 0.028),
+                      sdSphere(ax - vec3f(0.0, -0.118, 0.255), 0.03), 0.02);
+        mu -= 0.008 * vnoise(q * vec3f(90.0, 20.0, 90.0));
+        r = U(r, vec2f(mu, M_BEARD));
+    }
     if (g_glasses > 0.5) {
         let lc = ax - vec3f(0.086, 0.07, 0.285);
         let ring = abs(sdRoundRect(lc.xy, vec2f(0.068, 0.047), 0.016)) - 0.0075;
@@ -552,6 +555,7 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     g_glasses = P.v[5].w;
     g_phones = P.v[6].w;
     g_shoulders = P.v[7].x;
+    g_mustache = P.v[9].x;
     g_closed = P.v[7].y;
     let F = P.v[7].z;
     let fuzz = P.v[7].w;

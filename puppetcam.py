@@ -472,6 +472,7 @@ def main():
     ap.add_argument("--beard", choices=HAIR, default="gray")
     ap.add_argument("--no-beard", action="store_true")
     ap.add_argument("--no-glasses", action="store_true")
+    ap.add_argument("--mustache", action="store_true", help="add a mustache (off by default)")
     ap.add_argument("--lid", type=float, default=0.35, help="resting upper-lid coverage 0..0.9")
     ap.add_argument("--scale", type=float, default=2.4, help="puppet size vs face height")
     ap.add_argument("--shoulders", type=float, default=0.80, help="shoulder width (1.0 = old wide body)")
@@ -506,7 +507,7 @@ def main():
            "long": float(np.clip(args.long, 0, 1.2)), "shirt": SHIRT[args.shirt],
            "pez": float(np.clip(args.pez, 0, 1)),
            "shoulders": float(np.clip(args.shoulders, 0.5, 1.2)),
-           "headphones": not args.no_headphones}
+           "headphones": not args.no_headphones, "mustache": args.mustache}
 
     backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
     if args.video:

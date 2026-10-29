@@ -95,7 +95,7 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
    nostrils; raises the hair cap (`hairAmt`: full head of hair, front hairline at the forehead top rising over the temples, with a
    widow's peak: a 0.07-deep triangular dip, 0.075 half-width, at the centre).
 2. **Upper parts** (ride the upper head, never cut): ping-pong eyes, felt lid shells (edge height from
-   `lid`), brows, mustache, glasses (rings, bridge, temples), headphones (band, sliders, cups, pads).
+   `lid`), brows, mustache (`--mustache` only), glasses (rings, bridge, temples), headphones (band, sliders, cups, pads).
    **Brows are hair, not fleece**: `BROW_LOCKS`=24 tapered two-segment locks along the brow line, growing
    per `browFlow` (up at the inner end, drooping over the eye outside); shaded with strand striations
    across the flow, per-lock tone, dark roots, and a Kajiya-Kay sheen. **Lower parts**: goatee, tongue.
@@ -159,6 +159,7 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--skin` light/medium/tan/deep | medium | |
 | `--hair`, `--beard` gray/salt/white/brown/black | salt / gray | |
 | `--no-beard`, `--no-glasses`, `--no-headphones`, `--no-body`, `--no-erase` | off | flags |
+| `--mustache` | off | owner has no mustache (2026-10-29) |
 | `--shirt` blue/navy/red/green/plaid-gray | blue | plaid-gray is solid gray |
 | `--lid` | 0.35 | 0–0.9 |
 | `--scale` | 2.4 | head size vs face |

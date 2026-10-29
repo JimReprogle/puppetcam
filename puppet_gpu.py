@@ -72,6 +72,7 @@ class GpuPuppet:
         v[7, :2] = (cfg["shoulders"], 1.0 if closed else 0.0)
         v[7, 2:] = extra[:2]
         v[8] = extra[2:]
+        v[9, 0] = 1.0 if cfg["mustache"] else 0.0
         return v
 
     def _draw(self, w, h, params):
