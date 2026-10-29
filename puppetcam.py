@@ -25,7 +25,7 @@ from mediapipe.tasks.python.vision import (FaceLandmarker, FaceLandmarkerOptions
                                            ImageSegmenterOptions, RunningMode)
 
 import puppet_style
-from puppet_gpu import BODY_UNIT, GpuPuppet
+from puppet_gpu import BODY_UNIT, HAIRLINES, GpuPuppet
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
              "face_landmarker/float16/1/face_landmarker.task")
@@ -37,6 +37,7 @@ OUT_H = S + PADT + PADB
 MAX_YAW, MAX_PITCH = math.radians(38), math.radians(25)
 MOUTH_OPEN = 0.06        # below this the mouth is a closed line, above it the head hinges
 BODY_TURN = 0.35        # torso yaw as a fraction of head yaw
+BODY_ROLL = 0.5         # torso tilt as a fraction of head roll (about the base of the neck)
 PLATE_MISMATCH = 35.0   # plate match error (levels) above which, with no re-fit, it's another room
 SEG_WAIT = 0.010       # s: longest the frame waits for its own person mask before using the last one
 
@@ -138,6 +139,23 @@ def cast_head_shadow(frame, head_alpha, M, body_alpha, bx0, by0, size):
     keep = 1.0 - 0.45 * cv2.resize(blur, (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR) * recv
     roi = frame[y0:y1, x0:x1]
     frame[y0:y1, x0:x1] = cv2.blendLinear(roi, np.zeros_like(roi), keep, 1.0 - keep)
+
+
+def roll_sprite(c, a, ox, oy, deg):
+    """Tilt the torso sprite by `deg` (same sense as head_matrix's roll) about its collar point (ox, oy),
+    on a canvas big enough to hold it. Returns (color, alpha, new collar x, new collar y)."""
+    if abs(deg) < 1e-3:
+        return c, a, ox, oy
+    h, w = a.shape
+    M = cv2.getRotationMatrix2D((float(ox), float(oy)), -deg, 1.0)
+    corners = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]], np.float64) @ M.T
+    x0, y0 = np.floor(corners.min(0)).astype(int)
+    x1, y1 = np.ceil(corners.max(0)).astype(int)
+    M[:, 2] -= (x0, y0)
+    size = (int(x1 - x0), int(y1 - y0))
+    rc = cv2.warpAffine(c, M, size, flags=cv2.INTER_LINEAR, borderValue=0)
+    ra = cv2.warpAffine(a, M, size, flags=cv2.INTER_LINEAR, borderValue=0)
+    return rc, ra, int(round(ox - x0)), int(round(oy - y0))
 
 
 def blit(frame, spr, alpha, x0, y0):
@@ -502,6 +520,8 @@ def main():
     ap.add_argument("--hair", choices=HAIR)
     ap.add_argument("--beard", choices=HAIR)
     ap.add_argument("--brows", choices=HAIR)
+    ap.add_argument("--hairline", choices=HAIRLINES, default="widow",
+                    help="widow's peak, straight, receding (bald front crown), bald (side/back fringe)")
     ap.add_argument("--no-beard", action="store_true", help="no goatee or full beard")
     ap.add_argument("--full-beard", action="store_true")
     ap.add_argument("--mustache", action="store_true")
@@ -549,7 +569,7 @@ def main():
            "long": float(np.clip(args.long, 0, 1.2)), "shirt": SHIRT[args.shirt],
            "pez": float(np.clip(args.pez, 0, 1)),
            "shoulders": float(np.clip(args.shoulders, 0.5, 1.2)),
-           "headphones": not args.no_headphones}
+           "headphones": not args.no_headphones, "hairline": args.hairline}
     cfg.update(look(args, style))
 
     backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
@@ -761,7 +781,13 @@ def main():
                             body["q"], body["spr"] = q, (cv2.resize(c0, sz, interpolation=cv2.INTER_AREA),
                                                          cv2.resize(a0, sz, interpolation=cv2.INTER_AREA),
                                                          int(ox0 * q), int(oy0 * q))
-                        fc, fa, ox, oy = body["spr"]
+                            body["rolled"] = None
+                        # shoulders tilt with the head (part of its roll) about the base of the neck;
+                        # 0.5 deg steps, cached with the rescale
+                        rb = round(BODY_ROLL * roll / 0.5) * 0.5
+                        if body.get("rolled") is None or body["rolled"][0] != rb:
+                            body["rolled"] = (rb, roll_sprite(*body["spr"], rb))
+                        fc, fa, ox, oy = body["rolled"][1]
                         neck = args.neck * fh * args.scale
                         want = np.array((head_c[0], head_c[1] + neck))
                         pos = want if body["pos"] is None else body["pos"] + args.body_follow * (want - body["pos"])

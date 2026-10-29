@@ -15,6 +15,8 @@ Checks (each one exists because the bug it guards against actually shipped once)
   erase     - after the camera moves, the plate re-aligns so the erased person leaves no ghost
               (a tilted monitor webcam once pasted a shifted room into the silhouette)
   style     - auto-style facial-hair and color decisions; command-line switches override them
+  hairline  - --hairline types differ as named (widow/straight > receding > bald)
+  roll      - the torso tilts the same way as the head, pinned at the base of the neck
   timing    - GPU head/body render cost (report only)
 """
 import argparse
@@ -40,7 +42,8 @@ from puppet_gpu import GpuPuppet
 
 CFG = {"skin": p.SKIN["medium"], "hair": p.HAIR["salt"], "beard": p.HAIR["gray"], "beard_on": True,
        "glasses": True, "long": 1.0, "shirt": p.SHIRT["blue"], "pez": 1.0, "shoulders": 0.8,
-       "headphones": True, "mustache": False, "full_beard": False, "brow": p.HAIR["gray"]}
+       "headphones": True, "mustache": False, "full_beard": False, "brow": p.HAIR["gray"],
+       "hairline": "widow"}
 
 
 def state(mouth=0.0, yaw=0.0, pitch=0.0, brow=(0.0, 0.0), corners=0.0, lid=0.35):
@@ -220,6 +223,38 @@ def check_plate_mismatch(r):
     return dropped, f"plate from another room dropped: {dropped} (statuses {statuses}, err {e.last_err})"
 
 
+def check_hairline(r):
+    """--hairline types must differ as named: less hair from widow/straight -> receding -> bald."""
+    counts = {}
+    hair = np.array(p.HAIR["white"], np.int16)
+    for hl in pg.HAIRLINES:
+        g = renderer(dict(CFG, hairline=hl, hair=p.HAIR["white"], headphones=False, glasses=False))
+        c, a, _ = g.head(state())
+        top = (np.abs(c.astype(np.int16) - hair).max(-1) < 70) & (a > 0.9)
+        counts[hl] = int(top[: c.shape[0] // 2].sum())
+    ok = counts["bald"] < counts["receding"] < min(counts["widow"], counts["straight"])
+    return ok, f"hair pixels (front view, top half): {counts}"
+
+
+def check_roll(r):
+    """The torso tilts the same way as the head and keeps its collar point pinned (the neck base)."""
+    w, h, ox, oy = 400, 300, 200, 100
+    c = np.zeros((h, w, 3), np.uint8)
+    a = np.zeros((h, w), np.float32)
+    a[oy - 60:oy - 50, ox - 3:ox + 4] = 1.0                 # a marker straight above the collar (neck top)
+    rc_, ra, nox, noy = p.roll_sprite(c, a, ox, oy, 15.0)
+    ys, xs = np.nonzero(ra > 0.5)
+    body_dx = xs.mean() - nox
+    M = p.head_matrix(640, 360, 200, 15.0, 1.0)              # head rolled +15: where does "up" go?
+    up = M @ np.array((p.ANCHOR[0] * p.S, p.ANCHOR[1] * p.S + p.PADT - 50, 1.0))
+    ctr = M @ np.array((p.ANCHOR[0] * p.S, p.ANCHOR[1] * p.S + p.PADT, 1.0))
+    head_dx = up[0] - ctr[0]
+    same = np.sign(body_dx) == np.sign(head_dx) and abs(body_dx) > 5
+    # marker distance from the pivot is preserved (rotation about the collar point)
+    dist = np.hypot(xs.mean() - nox, ys.mean() - noy)
+    return same and abs(dist - 55) < 3, f"torso dx {body_dx:.1f} vs head dx {head_dx:.1f}; pivot distance {dist:.1f} (55)"
+
+
 def check_style(r):
     """Auto-style decisions from measurements (thresholds from the owner's frames): shaved upper lip
     0.02 vs mustache 0.33+; goatee 0.39+; jaw without beard 0.12-0.21. Colors are relative to skin.
@@ -290,6 +325,7 @@ def main():
     for name, fn in (("holes", check_holes), ("strays", check_strays), ("smooth", check_smooth),
                      ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("neck", check_neck), ("erase", check_erase),
                      ("plate", check_plate_mismatch), ("style", check_style),
+                     ("hairline", check_hairline), ("roll", check_roll),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok

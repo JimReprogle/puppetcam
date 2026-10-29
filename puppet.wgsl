@@ -28,6 +28,7 @@ var<private> g_closed: f32;     // 1 when the mouth is a closed line
 var<private> g_mustache: f32;
 var<private> g_fullbeard: f32;
 var<private> g_necktop: f32;    // body units above the collar
+var<private> g_hairline: f32;   // 0 widow, 1 straight, 2 receding, 3 bald
 
 const M_SKIN = 0.0;
 const M_HAIR = 1.0;
@@ -149,13 +150,32 @@ fn headBase(q: vec3f) -> f32 {
     return mix(e, b, g_pez) * 0.93;
 }
 
+// hair cap by --hairline (g_hairline): 0 widow's peak, 1 straight, 2 receding, 3 bald.
+// All share the sides and back down to the nape (under the headphones); they differ at the front/top
 fn hairAmt(q: vec3f) -> f32 {
-    // full head of hair: sides and back down to the nape; the front hairline sits at the forehead top,
-    // rises slightly over the temples and dips to a widow's peak in the middle
     let front = smoothstep(-0.02, 0.17, q.z);
-    let peak = 0.07 * max(0.0, 1.0 - abs(q.x) / 0.075);
-    let hl = mix(-0.14, 0.255 + 0.5 * q.x * q.x - peak, front);
-    return smoothstep(-0.008, 0.008, q.y - hl);
+    var front_hl = 0.0;
+    if (g_hairline < 0.5) {
+        // forehead top, rising slightly over the temples, dipping to a point in the middle
+        front_hl = 0.255 + 0.5 * q.x * q.x - 0.07 * max(0.0, 1.0 - abs(q.x) / 0.075);
+    } else if (g_hairline < 1.5) {
+        // square-ish full front
+        front_hl = 0.245 - 1.1 * q.x * q.x;
+    } else {
+        // receded at the temples (bald and receding)
+        front_hl = 0.22 - 1.6 * q.x * q.x;
+    }
+    var hair = smoothstep(-0.008, 0.008, q.y - mix(-0.14, front_hl, front));
+    if (g_hairline > 1.5 && g_hairline < 2.5) {
+        // receding: bald dome over the forehead and front crown
+        let e = (q.x / 0.16) * (q.x / 0.16) + ((q.z - 0.19) / 0.16) * ((q.z - 0.19) / 0.16);
+        hair *= 1.0 - (1.0 - smoothstep(0.8, 1.05, e)) * smoothstep(0.0, 0.08, q.y);
+    }
+    if (g_hairline > 2.5) {
+        // bald: a horseshoe fringe round the sides and back, nothing on top
+        hair *= 1.0 - smoothstep(0.08, 0.13, q.y);
+    }
+    return hair;
 }
 
 // sculpted felt head: dome, brow ridge, cheeks, chin, nose, nostrils, raised hair cap
@@ -582,6 +602,7 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     g_mustache = P.v[9].x;
     g_fullbeard = P.v[10].x;
     g_necktop = P.v[10].y;
+    g_hairline = P.v[10].z;
     g_closed = P.v[7].y;
     let F = P.v[7].z;
     let fuzz = P.v[7].w;

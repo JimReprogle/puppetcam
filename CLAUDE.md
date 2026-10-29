@@ -109,8 +109,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 
 1. **Head shape** `headBase`: mix(ellipsoid, rounded box) by `--pez`, height by `--long`, wider at the jaw.
    `skull` smooth-unions brow ridge, cheeks, chin, jowls (sagging beside the chin), nose; subtracts
-   nostrils; raises the hair cap (`hairAmt`: full head of hair, front hairline at the forehead top rising over the temples, with a
-   widow's peak: a 0.07-deep triangular dip, 0.075 half-width, at the centre).
+   nostrils; raises the hair cap (`hairAmt`, by `--hairline`: `widow` = forehead-top hairline rising over the temples with a
+   0.07-deep, 0.075 half-width central peak; `straight`; `receding` = bald front crown; `bald` = side/back fringe).
 2. **Upper parts** (ride the upper head, never cut): ping-pong eyes, felt lid shells (edge height from
    `lid`), brows, mustache (`--mustache` only), glasses (rings, bridge, temples), headphones (band, sliders, cups, pads).
    **Brows are hair, not fleece**: `BROW_LOCKS`=24 tapered two-segment locks along the brow line, growing
@@ -144,6 +144,7 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | `--neck` default 0.45 | Collar hidden behind the beard (head parked on the shoulders) |
 | Neck length follows `--neck`: top = head centre + `NECK_PAST_CENTRE` (0.08 head units), capped by `BODY_TOP`; body re-renders when `--neck` changes; `neck` check | Fixed 1.0-unit neck stuck out above the head at `--neck 0.2` |
 | Composite/shadow warps limited to ROI | 36 ms full-frame warps |
+| Torso tilts `BODY_ROLL`=0.5 of head roll about the collar point (`roll_sprite`, 0.5° steps, cached); `roll` check | Shoulders stayed level while the head tilted (not relative) |
 | Plate re-aligned to the live view; always warp `plate0`, never the warped plate | Camera tilted after `b`: erased silhouette showed a shifted room = semi-transparent "ghost" of the person |
 | Adopt a new plate fit only on a real error improvement, not on "fit moved" | Static-camera fits scatter 1–7 px; swapping each in made the erased patch jiggle every second |
 | Plate dropped (erase off until `b`) when no re-fit exists and the exposure-matched error stays > `PLATE_MISMATCH` (35) on 2 checks; first check at frame 5 | A plate from another desk would paste that room into the silhouette (matching plate ≈ 15, other room 54–100) |
@@ -179,6 +180,7 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--skin` light/medium/tan/deep | medium | |
 | `--hair`, `--beard`, `--brows` gray/salt/white/brown/black | auto (else salt / gray / = beard) | override auto-style |
 | `--no-beard`, `--full-beard`, `--mustache`, `--no-mustache` | auto | override detected facial hair |
+| `--hairline` widow/straight/receding/bald | widow | not auto-detected (owner's choice) |
 | `--style`, `--restyle`, `--no-auto-style` | `puppet_style.json` | style file; re-detect; ignore detection |
 | `--no-glasses`, `--no-headphones`, `--no-body`, `--no-erase` | off | flags |
 | `--shirt` blue/navy/red/green/plaid-gray | blue | plaid-gray is solid gray |

@@ -20,7 +20,8 @@ HINGE = np.array((0.0, -0.165, -0.06))
 UP_ANG = 0.48                         # must match puppet.wgsl
 NOSE = np.array((0.0, -0.025, 0.325))  # nose tip, head local
 BODY_UNIT = 300                       # body sprite px per body unit (main rescales)
-NECK_PAST_CENTRE = 0.08                # head units the neck reaches past the head centre (head top ~0.34)
+HAIRLINES = ("widow", "straight", "receding", "bald")   # --hairline; index order matches puppet.wgsl
+NECK_PAST_CENTRE = 0.08               # head units the neck reaches past the head centre (head top ~0.34)
 BODY_W, BODY_TOP, BODY_BOT = 3.2, 1.06, 2.5   # sprite: width, above / below the collar (units)
 
 
@@ -74,7 +75,7 @@ class GpuPuppet:
         v[7, 2:] = extra[:2]
         v[8] = extra[2:]
         v[9] = (1.0 if cfg["mustache"] else 0.0, *_lin(cfg["brow"]))
-        v[10, :2] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0))
+        v[10, :3] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0), HAIRLINES.index(cfg["hairline"]))
         return v
 
     def set_cfg(self, cfg):
