@@ -978,6 +978,7 @@ def composite(frame, canvas, alpha, M):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cam", type=int, default=0)
+    ap.add_argument("--video", help="read frames from a video file instead of the camera (benchmarking)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--fps", type=int, default=30)
@@ -1023,10 +1024,13 @@ def main():
            "headphones": not args.no_headphones}
 
     backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
-    cap = cv2.VideoCapture(args.cam, backend)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    cap.set(cv2.CAP_PROP_FPS, args.fps)
+    if args.video:
+        cap = cv2.VideoCapture(args.video)
+    else:
+        cap = cv2.VideoCapture(args.cam, backend)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        cap.set(cv2.CAP_PROP_FPS, args.fps)
     ok, frame = cap.read()
     if not ok:
         sys.exit("camera read failed")
@@ -1122,12 +1126,13 @@ def main():
                           "brow": (float(bu_), float(bd_)), "corners": float(cn_),
                           "yaw": float(np.clip((yaw - neutral[0]) * args.turn, -MAX_YAW, MAX_YAW)),
                           "pitch": float(np.clip((pitch - neutral[1]) * args.turn, -MAX_PITCH, MAX_PITCH))}
-                    # re-render the head only when the pose/expression actually changed (quantized);
-                    # a still face costs nothing but the composite
-                    key = (round(st["mouth"] * 20), round(st["lid"] * 20), round(st["gaze"][0] * 10),
-                           round(st["gaze"][1] * 10), round(math.degrees(st["yaw"])), round(math.degrees(st["pitch"])),
-                           round(st["brow"][0] * 10), round(st["brow"][1] * 10), round(st["corners"] * 10))
-                    if key != head_key:
+                    # re-render the head only when some value moved a full step (1 deg, 0.05 mouth/lid,
+                    # 0.1 gaze/brow/corners) from what was last drawn. A deadband, not rounding: landmark
+                    # jitter across a bucket edge re-rendered 70-80 % of frames with rounding
+                    key = np.array((st["mouth"] * 20, st["lid"] * 20, st["gaze"][0] * 10, st["gaze"][1] * 10,
+                                    math.degrees(st["yaw"]), math.degrees(st["pitch"]),
+                                    st["brow"][0] * 10, st["brow"][1] * 10, st["corners"] * 10))
+                    if head_key is None or np.max(np.abs(key - head_key)) >= 1.0:
                         prof.lap("head_key")
                         head_key, head_cache = key, draw_puppet(st, cfg, felt)
                         prof.lap("draw_puppet")
