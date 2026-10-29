@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+# models are auto-downloaded on first run
+*.task
+*.tflite
+# personal room photo
+empty_room.png
+.DS_Store
