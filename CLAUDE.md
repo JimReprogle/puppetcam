@@ -113,6 +113,9 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 - Apple Silicon, 1280×720, erase on (`--profile` on the recorded clip, 2026-10-29): frame **33.3 ms = 30 fps cap**,
   main-thread work ≈ 21 ms: landmark 7.1, erase 8.4 (segmenter ≈ 3.5 of it), body 4.0, composite 0.7, send 0.5.
   `draw_puppet` ≈ 47 ms on the render thread, ~25–35 % of frames. Before this work: 80 ms/frame (13 fps).
+  Live camera with a real plate: 33.2–34.6 ms/frame (p95 36.6–40.9), ~20 ms of it main-thread work.
+- Camera indices shift with what's attached; the OBS Virtual Camera has a number too. Never point
+  `--cam` at it (feedback loop). Check with `system_profiler SPCameraDataType`.
 - Blends are uint8 `cv2.blendLinear` (no float32 frame copies); `cast_head_shadow` buffers are window-sized
   and its wide blur runs at 1/4 res. Keep new per-frame work in that style.
 - Benchmark: `python puppetcam.py --video clip.mp4 --profile --plate <png>` (a GIL build; a render process
@@ -149,8 +152,6 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 ## Backlog
 
 - Roll gain / roll lock option (owner flagged head tilt as possibly exaggerated).
-- Live-camera run of the threaded pipeline (verified only on a clip-fed `Grabber` + reading the OBS output;
-  no camera was attached at the time).
 - First real run on Windows (camera index, OBS registration).
 - `plaid-gray` should either become a real plaid texture or be renamed.
 - Arms/hands via PoseLandmarker/HandLandmarker exist in mediapipe 1.2.0 — deferred for speed.
