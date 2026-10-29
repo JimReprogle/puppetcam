@@ -173,49 +173,111 @@ def blit(frame, spr, alpha, x0, y0):
 
 SEG_URL = ("https://storage.googleapis.com/mediapipe-models/image_segmenter/"
            "selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite")
+FAST_SEG_URL = ("https://storage.googleapis.com/mediapipe-models/image_segmenter/"
+                "selfie_segmenter/float16/latest/selfie_segmenter.tflite")
+
+
+def _views(masks):
+    return [np.squeeze(m.numpy_view(), axis=-1) if m.numpy_view().ndim == 3 else m.numpy_view() for m in masks]
+
+
+def _person(views, classes):
+    """(person mask, argmax class map or None). Person = the strongest person class, not 1 - background:
+    1 - background floors at ~0.08 on an empty room, so nothing would pass the < 0.05 clear-background
+    test that gain matching and plate alignment depend on. Single-class models (one mask) are used as-is."""
+    if len(views) == 1:
+        return views[0].copy(), None
+    stack = np.stack(views)
+    return np.max(stack[1:], axis=0), (np.argmax(stack, axis=0).astype(np.uint8) if classes else None)
 
 
 class PersonSegmenter:
-    """Person confidence mask from MediaPipe's multiclass selfie model, on the GPU (Metal), on its own
-    thread so it overlaps face tracking (13.6 ms vs 124 ms on CPU).
-    Why multiclass: the single-class selfie model dropped the torso whenever the head turned (16 % torso
-    coverage vs 89 %), leaving the real shirt un-erased around the puppet.
-    Person = the strongest person class, not 1 - background: 1 - background floors at ~0.08 on an empty
-    room, so nothing would pass the < 0.05 clear-background test that gain matching and plate alignment
-    depend on. Single-class models (one mask) are used as-is."""
+    """Person confidence mask, on its own thread so it overlaps face tracking. Two modes:
 
-    def __init__(self, path):
+    gpu (macOS): the multiclass selfie model on MediaPipe's GPU delegate, every frame (13.6 ms vs 124 ms
+      on CPU). Why multiclass: the single-class selfie model dropped the torso whenever the head turned
+      (16 % torso coverage vs 89 %), leaving the real shirt un-erased around the puppet.
+    hybrid (Windows: its MediaPipe build has GPU processing disabled): the fast single-class model on the
+      CPU every frame (~4 ms) for the head and moving edges, max'ed with the multiclass mask refreshed
+      on a second CPU thread whenever it's free (~124 ms) for the torso, which barely moves. The union
+      only ever erases extra, and extra erasing is invisible (the room photo matches the room there).
+      Turned-head frame: torso coverage fast 0.16, union 0.89; background erased 0.
+
+    submit() returns a future of (person mask, argmax class map or None, ts). Class maps (auto-style) come
+    from the multiclass model on that very frame; in hybrid mode that costs ~124 ms per sampled frame."""
+
+    def __init__(self, path, mode="auto", fast_path=None):
         self.pool = ThreadPoolExecutor(1)               # MediaPipe's GPU context stays on this thread
-        self.seg = self.pool.submit(self._create, path).result()
+        self.mode = mode
+        if mode == "auto":
+            self.mode = "hybrid" if sys.platform == "win32" else "gpu"
+        if self.mode == "gpu":
+            try:
+                self.seg = self.pool.submit(self._create, path, BaseOptions.Delegate.GPU).result()
+            except (RuntimeError, ValueError) as ex:
+                if mode == "gpu":
+                    raise
+                print(f"GPU segmentation unavailable ({ex}); using hybrid CPU segmentation")
+                self.mode = "hybrid"
+        if self.mode == "hybrid":
+            self.seg = self.pool.submit(self._create, path, BaseOptions.Delegate.CPU).result()
+            self.fast = self.pool.submit(self._create, fast_path, BaseOptions.Delegate.CPU).result()
+            self.slow_pool, self.slow_job, self.slow_mask = ThreadPoolExecutor(1), None, None
+            # the slow model gets its own instance so the two threads never share one graph
+            self.slow = self.slow_pool.submit(self._create, path, BaseOptions.Delegate.CPU).result()
+            self.slow_ts = -1
 
     @staticmethod
-    def _create(path):
+    def _create(path, delegate):
         return ImageSegmenter.create_from_options(ImageSegmenterOptions(
-            base_options=BaseOptions(model_asset_path=path, delegate=BaseOptions.Delegate.GPU),
+            base_options=BaseOptions(model_asset_path=path, delegate=delegate),
             running_mode=RunningMode.VIDEO, output_confidence_masks=True, output_category_mask=False))
 
     def submit(self, frame, ts, classes=False):
-        """Start segmenting `frame` (it must not be modified until the result is taken). The result is
-        (person mask, argmax class map if `classes` else None, ts) or None."""
+        """Start segmenting `frame` (it must not be modified until the result is taken)."""
         return self.pool.submit(self._run, frame, ts, classes)
 
     def _run(self, frame, ts, classes):
-        img = mp.Image(image_format=mp.ImageFormat.SRGBA,      # the GPU path takes 4-channel input only
-                       data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)))
-        masks = self.seg.segment_for_video(img, ts).confidence_masks
-        if not masks:
-            return None
-        views = [np.squeeze(m.numpy_view(), axis=-1) if m.numpy_view().ndim == 3 else m.numpy_view()
-                 for m in masks]
-        if len(views) == 1:
-            return views[0].copy(), None, ts
+        if self.mode == "gpu":
+            img = mp.Image(image_format=mp.ImageFormat.SRGBA,  # the GPU path takes 4-channel input only
+                           data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)))
+            masks = self.seg.segment_for_video(img, ts).confidence_masks
+            if not masks:
+                return None
+            return (*_person(_views(masks), classes), ts)
+        img = mp.Image(image_format=mp.ImageFormat.SRGB,
+                       data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
         if classes:
-            stack = np.stack(views)
-            return np.max(stack[1:], axis=0), np.argmax(stack, axis=0).astype(np.uint8), ts
-        return np.max(np.stack(views[1:]), axis=0), None, ts
+            # style sampling (calibration only): this frame's own class map, synchronously
+            masks = self.seg.segment_for_video(img, ts).confidence_masks
+            if not masks:
+                return None
+            return (*_person(_views(masks), True), ts)
+        fast = self.fast.segment_for_video(img, ts).confidence_masks
+        if not fast:
+            return None
+        mask = _views(fast)[-1].copy()
+        if self.slow_job is not None and self.slow_job.done():
+            res, self.slow_job = self.slow_job.result(), None
+            if res is not None:
+                self.slow_mask = res
+        if self.slow_job is None and ts > self.slow_ts:
+            self.slow_ts = ts
+            self.slow_job = self.slow_pool.submit(self._slow, img, ts)
+        if self.slow_mask is not None and self.slow_mask.shape == mask.shape:
+            np.maximum(mask, self.slow_mask, out=mask)
+        return mask, None, ts
+
+    def _slow(self, img, ts):
+        masks = self.slow.segment_for_video(img, ts).confidence_masks
+        return _person(_views(masks), False)[0] if masks else None
 
     def close(self):
         self.pool.submit(self.seg.close).result()
+        if self.mode == "hybrid":
+            self.pool.submit(self.fast.close).result()
+            self.slow_pool.submit(self.slow.close).result()
+            self.slow_pool.shutdown(cancel_futures=True)
         self.pool.shutdown()
 
 
@@ -552,6 +614,11 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap.add_argument("--model", default=os.path.join(here, "face_landmarker.task"))
     ap.add_argument("--seg-model", default=os.path.join(here, "selfie_multiclass_256x256.tflite"))
+    ap.add_argument("--fast-seg-model", default=os.path.join(here, "selfie_segmenter.tflite"),
+                    help="fast single-class model used every frame in hybrid mode")
+    ap.add_argument("--seg-mode", choices=("auto", "gpu", "hybrid"), default="auto",
+                    help="person segmentation: gpu (macOS), hybrid CPU (Windows); auto picks per platform")
+    ap.add_argument("--list-cams", action="store_true", help="list camera indices that open, then exit")
     ap.add_argument("--plate", default=os.path.join(here, "empty_room.png"),
                     help="saved empty-room background used to erase you")
     ap.add_argument("--style", default=os.path.join(here, "puppet_style.json"),
@@ -576,6 +643,15 @@ def main():
     cfg.update(look(args, style))
 
     backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
+    if args.list_cams:
+        # OpenCV can't read device names; the OBS Virtual Camera is one of these indices too (never use it)
+        for i in range(8):
+            probe = cv2.VideoCapture(i, backend)
+            ok, img = probe.read() if probe.isOpened() else (False, None)
+            probe.release()
+            if ok:
+                print(f"--cam {i}: {img.shape[1]}x{img.shape[0]} (default resolution)")
+        sys.exit(0)
     if args.video:
         cap = cv2.VideoCapture(args.video)
     else:
@@ -601,7 +677,14 @@ def main():
         if not os.path.exists(args.seg_model):
             print(f"downloading segmentation model -> {args.seg_model}")
             urllib.request.urlretrieve(SEG_URL, args.seg_model)
-        segmenter = PersonSegmenter(args.seg_model)
+        mode = args.seg_mode
+        if mode == "auto" and sys.platform == "win32":
+            mode = "hybrid"
+        if mode != "gpu" and not os.path.exists(args.fast_seg_model):
+            print(f"downloading fast segmentation model -> {args.fast_seg_model}")
+            urllib.request.urlretrieve(FAST_SEG_URL, args.fast_seg_model)
+        segmenter = PersonSegmenter(args.seg_model, mode, args.fast_seg_model)
+        print(f"person segmentation: {segmenter.mode}")
         eraser = Eraser(w, h, args.plate)
         if eraser.plate is None:
             print("to erase yourself: press b, step out of frame within 5 s, wait for the capture")

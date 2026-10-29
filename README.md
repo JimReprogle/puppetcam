@@ -7,10 +7,12 @@ It reads your webcam, tracks your face, erases you from the picture, and draws a
 to the OBS Virtual Camera, so Teams, Zoom or any other video app can use it as a normal camera.
 
 - Runs at 30 fps at 1280×720 on Apple Silicon (measured on an M2 Pro).
-- The puppet is a real 3-D model rendered on the GPU (Metal), shaded to look like fleece, not plastic.
+- The puppet is a real 3-D model rendered on the GPU (Metal on macOS, DirectX 12 or Vulkan on Windows),
+  shaded to look like fleece, not plastic.
 - On first calibration it detects your facial hair and hair colours and styles the puppet to match.
 
-**Platform:** macOS on Apple Silicon only.
+**Platforms:** macOS on Apple Silicon (tested). Windows x64 (written and dependency-checked, not yet run
+on a Windows machine; see [Windows](#windows)).
 
 ## Contents
 
@@ -23,8 +25,11 @@ to the OBS Virtual Camera, so Teams, Zoom or any other video app can use it as a
 - [Files](#files)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
+- [Windows](#windows)
 
 ## Setup
+
+The commands below are for macOS. For Windows, see [Windows](#windows).
 
 1. Install OBS Studio. It provides the virtual-camera driver. The OBS app does not have to run, but
    its own Virtual Camera must be stopped while puppetcam runs.
@@ -38,16 +43,18 @@ to the OBS Virtual Camera, so Teams, Zoom or any other video app can use it as a
      `git clone --recursive --branch v0.15.0 https://github.com/letmaik/pyvirtualcam`.
    - `mediapipe` 1.2.0 has no Intel-Mac wheels.
 3. Run it once. The face and person models download automatically on first start
-   (`face_landmarker.task`, `selfie_multiclass_256x256.tflite`).
+   (`face_landmarker.task`, `selfie_multiclass_256x256.tflite`, and on Windows `selfie_segmenter.tflite`).
 4. If macOS asks for camera access for the terminal, allow it.
 
 ## Quick start
 
-1. Find your camera index. The list order is the index order, starting at 0:
+1. Find your camera index:
    ```bash
-   system_profiler SPCameraDataType | grep -E "^\s{4}\S"
+   .venv/bin/python puppetcam.py --list-cams
    ```
-   Do not pick "OBS Virtual Camera". puppetcam would then read its own output.
+   This prints every index that opens. Device names aren't available, and the OBS Virtual Camera is one
+   of the indices too: never pick it, or puppetcam reads its own output. On macOS,
+   `system_profiler SPCameraDataType` lists the names in index order.
 2. Start puppetcam with the preview window:
    ```bash
    .venv/bin/python puppetcam.py --cam 0 --preview
@@ -74,15 +81,21 @@ Each frame goes through this pipeline:
 
    All values are smoothed. Size uses the 3-D forehead-to-chin distance, so leaning in or nodding
    does not stretch the puppet.
-3. **Erase.** The MediaPipe multiclass selfie segmenter runs on the GPU and finds every pixel that is
-   you (hair, skin and clothes). Those pixels are replaced with the empty-room photo, matched to the
+3. **Erase.** A person segmenter finds every pixel that is you (hair, skin and clothes):
+   - **macOS (`gpu` mode):** the MediaPipe multiclass selfie model runs on the GPU every frame.
+   - **Windows (`hybrid` mode):** MediaPipe has no GPU support on Windows, and the multiclass model takes
+     about 124 ms per frame on a CPU. A fast single-class model (about 4 ms) runs every frame for your head
+     and moving edges. The multiclass model refreshes the mask for your torso on a second thread
+     whenever it is free. Coverage on a recorded test clip was the same as in `gpu` mode.
+
+   Those pixels are replaced with the empty-room photo, matched to the
    current exposure. Two safeguards protect it:
    - **Alignment.** About once a second the room photo is re-aligned to the live view, so a bumped
      camera does not leave a ghost of you.
    - **Wrong room.** If the photo is from a different room, puppetcam turns erasing off and tells you
      to press `b`.
 4. **Render.** The puppet head and torso are 3-D shapes built from smooth signed-distance primitives,
-   ray-marched on the GPU through `wgpu` and Metal:
+   ray-marched on the GPU through `wgpu`:
    - The **head** has a hinged mouth: the upper head lifts, the jaw drops, and the opening tapers to
      closed corners.
    - The **torso** turns a third as far as your head and tilts half as far as your head roll. Its neck
@@ -121,6 +134,7 @@ silently set to the nearest limit.
 | `--video FILE` | none | path | Read frames from a video file instead of the camera. For benchmarking: not paced, every frame processed. |
 | `--preview` | off | flag | Show a preview window and enable the [preview keys](#preview-keys). |
 | `--profile` | off | flag | Print per-stage timings (mean, 95th percentile) every 150 frames and on exit. |
+| `--list-cams` | off | flag | Print the camera indices that open, then exit. |
 
 ### Erasing you
 
@@ -129,6 +143,8 @@ silently set to the nearest limit.
 | `--no-erase` | off | flag | Do not erase you. The puppet draws over the live picture. Also disables auto-style. |
 | `--plate FILE` | `empty_room.png` | path | Empty-room photo. Written when you press `b`. |
 | `--seg-model FILE` | `selfie_multiclass_256x256.tflite` | path | Person segmentation model. Single-class models also work but lose the torso when you turn. |
+| `--seg-mode` | `auto` | `auto`, `gpu`, `hybrid` | Person segmentation. `auto` picks `gpu` on macOS (falls back to `hybrid` if the GPU path fails) and `hybrid` on Windows. |
+| `--fast-seg-model FILE` | `selfie_segmenter.tflite` | path | Fast single-class model used every frame in `hybrid` mode. |
 | `--model FILE` | `face_landmarker.task` | path | Face landmark model. |
 
 ### Look: skin, hair and facial hair
@@ -264,12 +280,45 @@ Benchmark the full pipeline on a recorded clip:
 
 | Symptom | Cause and fix |
 |---|---|
-| `camera read failed` | Wrong `--cam` index or no camera permission. Check the camera list. Allow camera access for your terminal. |
+| `camera read failed` | Wrong `--cam` index or no camera permission. Run `--list-cams`. Allow camera access for your terminal (macOS) or apps (Windows privacy settings). |
 | A ghost of you behind the puppet | The room photo no longer matches. Small camera moves re-align automatically. Otherwise press `b` again. |
 | `empty-room plate doesn't match this room` | You are at a different desk. Run with `--preview` and press `b`. |
 | `style: no frames facing the camera` | Your camera is off to the side. Face it and press `c`. |
 | Puppet too big or off-centre | Use the preview keys `w`/`s`/`=`/`-`, then put the printed values in your command. |
 | Video app shows a black or OBS image | Stop the OBS app's own Virtual Camera, then restart puppetcam. |
+
+## Windows
+
+Every dependency has Windows x64 wheels for Python 3.13 and 3.14 (checked against PyPI). The code path is
+the same except for person segmentation, which uses `hybrid` mode (see [How it works](#how-it-works)).
+The `hybrid` path was benchmarked on macOS with `--seg-mode hybrid`: 30 fps live, the same torso coverage
+as `gpu` mode. It has not yet run on a Windows machine.
+
+1. Install OBS Studio. It registers the virtual camera.
+2. Install Python 3.14 (x64) from python.org.
+3. Create the environment in PowerShell:
+   ```powershell
+   py -3.14 -m venv .venv
+   .venv\Scripts\pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python numpy
+   ```
+4. Find your camera:
+   ```powershell
+   .venv\Scripts\python puppetcam.py --list-cams
+   ```
+5. Run it with profiling the first time:
+   ```powershell
+   .venv\Scripts\python puppetcam.py --cam 0 --preview --profile
+   ```
+   Check that the `frame` line reads about 33 ms. Check that `person segmentation: hybrid` is printed.
+
+Things only a Windows run can confirm:
+- **GPU speed.** On integrated graphics the puppet may render 2–4× slower than on an M2 Pro. Renders run in
+  the background, so the frame rate holds but the head updates less often. If it looks steppy, try a
+  smaller `--scale` or `--no-body`.
+- **Calibration.** Auto-style runs the multiclass model on the CPU for each sampled frame. The first
+  second after start (or `c`) runs at a low frame rate.
+- **Camera.** Capture uses DirectShow. If the camera won't open at 1280×720, try another `--cam` index or
+  `--width 1920 --height 1080`.
 
 ## Design note
 

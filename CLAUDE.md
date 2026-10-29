@@ -39,8 +39,10 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
   (`FaceLandmarker`, `ImageSegmenter`) with `RunningMode.VIDEO` and monotonic ms timestamps.
 - OBS must be installed (provides the camera extension/driver); the OBS app need not run, and its own
   Virtual Camera must be stopped while puppetcam runs.
-- Apple Silicon Mac only, by owner decision (2026-10-29). wgpu would also run on DX12/Vulkan, but
-  Windows was never executed and is out of scope.
+- Primary: Apple Silicon Mac. Windows x64 port written 2026-10-29 (owner chose the hybrid-segmentation
+  option) but NOT yet executed on Windows: all deps have win_amd64 wheels (cp313/cp314); wgpu runs on
+  DX12/Vulkan; capture uses CAP_DSHOW. The Windows mediapipe 1.2.0 build has GPU disabled (its DLL contains
+  "GPU processing is disabled in build flags"; the macOS dylib has Metal code instead), hence `--seg-mode hybrid`.
 
 ## Per-frame pipeline (`main`)
 
@@ -48,8 +50,12 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
    so benchmarks see every frame) → `mp.Image` (SRGB, contiguous); mediapipe timestamps = capture time.
 2. `FaceLandmarker.detect_for_video` with `output_face_blendshapes=True`.
 3. Empty-room capture timer (`b`, 5 s) runs before anything is drawn, so the plate is the raw frame.
-4. `PersonSegmenter` (multiclass selfie model, MediaPipe GPU delegate, own thread, SRGBA input) is
-   submitted before face tracking and overlaps it; person = max of the 5 person classes. The frame waits
+4. `PersonSegmenter` is submitted before face tracking and overlaps it; person = max of the 5 person
+   classes. `--seg-mode gpu` (macOS): multiclass model on MediaPipe's GPU delegate, SRGBA input.
+   `hybrid` (Windows; auto fallback if GPU init fails): fast single-class `selfie_segmenter` on CPU every
+   frame (~4 ms) max'ed with the multiclass mask refreshed on a second CPU thread (~124 ms, own graph
+   instance); class maps for auto-style run the multiclass model synchronously on that frame. Measured on
+   the Mac with `--seg-mode hybrid`: clip torso coverage mean 0.99 / min 0.98 (same as gpu), live 33.2–33.5 ms. The frame waits
    at most `SEG_WAIT` (10 ms) for its mask, else uses the previous one (job keeps running).
    `Eraser.apply`: quarter-res mask → dilate/feather → replace person pixels with `empty_room.png`,
    per-channel gain-matched to current exposure on clear background (person < 0.05).
@@ -209,6 +215,8 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--blink` | 0.45 | eyeBlink threshold |
 | `--plate`, `--model`, `--seg-model` | beside script | paths; `--seg-model` defaults to the multiclass model (single-class models still work) |
 | `--cam`, `--width`, `--height`, `--fps` | 0, 1280, 720, 30 | |
+| `--seg-mode` auto/gpu/hybrid, `--fast-seg-model` | auto | hybrid = Windows CPU segmentation |
+| `--list-cams` | off | probe indices 0–7 and exit (cross-platform; no device names) |
 | `--video` | none | read a video file instead of the camera (benchmarks; not paced, every frame processed) |
 | `--profile` | off | per-stage mean/p95 ms every 150 frames and on exit |
 | `--preview` | off | keys: `w/s` lift, `=/-` scale, `i/k` neck, `b` plate, `c` calibrate, `q` quit |
