@@ -13,6 +13,7 @@ Checks (each one exists because the bug it guards against actually shipped once)
   body      - torso interior is fully opaque
   erase     - after the camera moves, the plate re-aligns so the erased person leaves no ghost
               (a tilted monitor webcam once pasted a shifted room into the silhouette)
+  style     - auto-style facial-hair and color decisions; command-line switches override them
   timing    - GPU head/body render cost (report only)
 """
 import argparse
@@ -32,11 +33,12 @@ import cv2
 import numpy as np
 
 import puppetcam as p
+import puppet_style
 from puppet_gpu import GpuPuppet
 
 CFG = {"skin": p.SKIN["medium"], "hair": p.HAIR["salt"], "beard": p.HAIR["gray"], "beard_on": True,
        "glasses": True, "long": 1.0, "shirt": p.SHIRT["blue"], "pez": 1.0, "shoulders": 0.8,
-       "headphones": True, "mustache": False}
+       "headphones": True, "mustache": False, "full_beard": False, "brow": p.HAIR["gray"]}
 
 
 def state(mouth=0.0, yaw=0.0, pitch=0.0, brow=(0.0, 0.0), corners=0.0, lid=0.35):
@@ -199,6 +201,37 @@ def check_plate_mismatch(r):
     return dropped, f"plate from another room dropped: {dropped} (statuses {statuses}, err {e.last_err})"
 
 
+def check_style(r):
+    """Auto-style decisions from measurements (thresholds from the owner's frames): shaved upper lip
+    0.02 vs mustache 0.33+; goatee 0.39+; jaw without beard 0.12-0.21. Colors are relative to skin.
+    Explicit switches must override the detected style."""
+    import argparse
+
+    def s(mu, go, jaw, hair, beard, brow, skin=(120.0, 20.0)):
+        return {"mustache": mu, "goatee": go, "jaw": jaw, "skin": list(skin),
+                "hair": list(hair), "beard": list(beard) if beard else None, "brow": list(brow) if brow else None}
+
+    bad = []
+    owner = puppet_style.decide([s(0.02, 0.48, 0.16, (91, 9), (87, 4.5), (57, 8.5), (121, 21))] * 3)
+    if not (owner["goatee"] and not owner["mustache"] and not owner["full_beard"]
+            and (owner["hair"], owner["beard"], owner["brow"]) == ("gray", "gray", "salt")):
+        bad.append(("owner today", puppet_style.summary(owner)))
+    full = puppet_style.decide([s(0.6, 0.9, 0.7, (30, 4), (28, 4), (25, 4))])
+    if not (full["mustache"] and full["full_beard"] and full["beard"] == "black"):
+        bad.append(("full dark beard", puppet_style.summary(full)))
+    shaved = puppet_style.decide([s(0.03, 0.1, 0.1, (60, 18), None, (50, 16))])
+    if shaved["goatee"] or shaved["mustache"] or shaved["full_beard"] or shaved["hair"] != "brown":
+        bad.append(("clean-shaven brunette", puppet_style.summary(shaved)))
+    if puppet_style.decide([]) is not None:
+        bad.append(("no frames", "should be None"))
+    flags = argparse.Namespace(hair="white", beard=None, brows=None, no_beard=True, full_beard=False,
+                               mustache=True, no_mustache=False)
+    lk = p.look(flags, owner)
+    if lk["hair"] != p.HAIR["white"] or lk["beard_on"] or not lk["mustache"] or lk["beard"] != p.HAIR["gray"]:
+        bad.append(("flags override", lk))
+    return not bad, f"style decisions wrong: {len(bad)} {bad[:2]}"
+
+
 def timing(r):
     st = state(0.5, 15, 5, (0.3, 0.0), 0.2)
     r["g"].head(st)  # warm-up
@@ -237,7 +270,7 @@ def main():
     ok_all = True
     for name, fn in (("holes", check_holes), ("strays", check_strays), ("smooth", check_smooth),
                      ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("erase", check_erase),
-                     ("plate", check_plate_mismatch),
+                     ("plate", check_plate_mismatch), ("style", check_style),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok

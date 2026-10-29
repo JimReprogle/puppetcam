@@ -24,6 +24,7 @@ from mediapipe.tasks.python import BaseOptions
 from mediapipe.tasks.python.vision import (FaceLandmarker, FaceLandmarkerOptions, ImageSegmenter,
                                            ImageSegmenterOptions, RunningMode)
 
+import puppet_style
 from puppet_gpu import BODY_UNIT, GpuPuppet
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
@@ -175,11 +176,12 @@ class PersonSegmenter:
             base_options=BaseOptions(model_asset_path=path, delegate=BaseOptions.Delegate.GPU),
             running_mode=RunningMode.VIDEO, output_confidence_masks=True, output_category_mask=False))
 
-    def submit(self, frame, ts):
-        """Start segmenting `frame` (must not be modified until the result is taken)."""
-        return self.pool.submit(self._run, frame, ts)
+    def submit(self, frame, ts, classes=False):
+        """Start segmenting `frame` (it must not be modified until the result is taken). The result is
+        (person mask, argmax class map if `classes` else None, ts) or None."""
+        return self.pool.submit(self._run, frame, ts, classes)
 
-    def _run(self, frame, ts):
+    def _run(self, frame, ts, classes):
         img = mp.Image(image_format=mp.ImageFormat.SRGBA,      # the GPU path takes 4-channel input only
                        data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)))
         masks = self.seg.segment_for_video(img, ts).confidence_masks
@@ -188,8 +190,11 @@ class PersonSegmenter:
         views = [np.squeeze(m.numpy_view(), axis=-1) if m.numpy_view().ndim == 3 else m.numpy_view()
                  for m in masks]
         if len(views) == 1:
-            return views[0].copy()
-        return np.max(np.stack(views[1:]), axis=0)
+            return views[0].copy(), None, ts
+        if classes:
+            stack = np.stack(views)
+            return np.max(stack[1:], axis=0), np.argmax(stack, axis=0).astype(np.uint8), ts
+        return np.max(np.stack(views[1:]), axis=0), None, ts
 
     def close(self):
         self.pool.submit(self.seg.close).result()
@@ -460,6 +465,31 @@ class Grabber(threading.Thread):
         self.join(timeout=2.0)
 
 
+def look(args, style):
+    """Hair and facial hair: built-in defaults <- detected/saved style <- explicit command-line switches."""
+    hair, beard, brow = "salt", "gray", None
+    goatee, mustache, full = True, False, False
+    if style is not None:
+        hair, beard, brow = style["hair"], style["beard"], style["brow"]
+        goatee, mustache, full = style["goatee"], style["mustache"], style["full_beard"]
+    if args.hair:
+        hair = args.hair
+    if args.beard:
+        beard = args.beard
+    if args.brows:
+        brow = args.brows
+    if args.no_beard:
+        goatee, full = False, False
+    if args.full_beard:
+        full = True
+    if args.mustache:
+        mustache = True
+    if args.no_mustache:
+        mustache = False
+    return {"hair": HAIR[hair], "beard": HAIR[beard], "brow": HAIR[brow or beard],
+            "beard_on": goatee, "mustache": mustache, "full_beard": full}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cam", type=int, default=0)
@@ -468,11 +498,15 @@ def main():
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--skin", choices=SKIN, default="medium")
-    ap.add_argument("--hair", choices=HAIR, default="salt")
-    ap.add_argument("--beard", choices=HAIR, default="gray")
-    ap.add_argument("--no-beard", action="store_true")
+    # hair and facial hair come from auto-style (puppet_style.json); these switches override it
+    ap.add_argument("--hair", choices=HAIR)
+    ap.add_argument("--beard", choices=HAIR)
+    ap.add_argument("--brows", choices=HAIR)
+    ap.add_argument("--no-beard", action="store_true", help="no goatee or full beard")
+    ap.add_argument("--full-beard", action="store_true")
+    ap.add_argument("--mustache", action="store_true")
+    ap.add_argument("--no-mustache", action="store_true")
     ap.add_argument("--no-glasses", action="store_true")
-    ap.add_argument("--mustache", action="store_true", help="add a mustache (off by default)")
     ap.add_argument("--lid", type=float, default=0.35, help="resting upper-lid coverage 0..0.9")
     ap.add_argument("--scale", type=float, default=2.4, help="puppet size vs face height")
     ap.add_argument("--shoulders", type=float, default=0.80, help="shoulder width (1.0 = old wide body)")
@@ -498,16 +532,25 @@ def main():
     ap.add_argument("--seg-model", default=os.path.join(here, "selfie_multiclass_256x256.tflite"))
     ap.add_argument("--plate", default=os.path.join(here, "empty_room.png"),
                     help="saved empty-room background used to erase you")
+    ap.add_argument("--style", default=os.path.join(here, "puppet_style.json"),
+                    help="detected facial hair + hair colors; written by auto-style, read on later starts")
+    ap.add_argument("--restyle", action="store_true", help="re-detect the style at calibration (or press c)")
+    ap.add_argument("--no-auto-style", action="store_true", help="ignore/skip style detection")
 
     args = ap.parse_args()
     args.lid = float(np.clip(args.lid, 0, 0.9))
 
-    cfg = {"skin": SKIN[args.skin], "hair": HAIR[args.hair], "beard": HAIR[args.beard],
-           "beard_on": not args.no_beard, "glasses": not args.no_glasses,
+    style = None
+    if not args.no_auto_style and not args.restyle:
+        style = puppet_style.load(args.style)
+        if style is not None:
+            print(f"style ({args.style}): {puppet_style.summary(style)}")
+    cfg = {"skin": SKIN[args.skin], "glasses": not args.no_glasses,
            "long": float(np.clip(args.long, 0, 1.2)), "shirt": SHIRT[args.shirt],
            "pez": float(np.clip(args.pez, 0, 1)),
            "shoulders": float(np.clip(args.shoulders, 0.5, 1.2)),
-           "headphones": not args.no_headphones, "mustache": args.mustache}
+           "headphones": not args.no_headphones}
+    cfg.update(look(args, style))
 
     backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
     if args.video:
@@ -562,6 +605,11 @@ def main():
     # second on its own worker (~90 ms) or the erased silhouette shows a shifted room (a "ghost")
     aligner, align_job, frame_i = ThreadPoolExecutor(1), None, 0
     seg_job, seg_last = None, None
+    # auto-style samples near-frontal frames during calibration (needs the segmenter's class map)
+    can_style = not args.no_auto_style and segmenter is not None
+    styling, style_samples = can_style and style is None, []
+    if not args.no_auto_style and segmenter is None:
+        print("auto-style needs the segmenter (it is off with --no-erase)")
 
     with pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR) as vcam:
         print(f"virtual camera: {vcam.device}")
@@ -587,23 +635,33 @@ def main():
                 # shares the GPU with the puppet renders and sometimes runs long; then this frame uses the
                 # previous mask (the 28 px dilation covers a frame of motion) and the job finishes later
                 erasing = segmenter is not None and eraser.plate is not None and grab_at is None
+                sampling = styling and calib is not None
                 if seg_job is not None and seg_job.done():
                     seg_last, seg_job = seg_job.result(), None
-                if erasing and seg_job is None:
-                    seg_job = segmenter.submit(frame.copy(), ts)     # copy: the frame is erased in place
+                if (erasing or sampling) and seg_job is None:
+                    # copy: the frame is erased in place
+                    seg_job = segmenter.submit(frame.copy(), ts, classes=sampling)
                 res = landmarker.detect_for_video(img, ts)
                 prof.lap("landmark")
                 if grab_at is not None and time.monotonic() >= grab_at:
                     eraser.grab(frame)
                     grab_at = None
-                if erasing:
+                if erasing or sampling:
                     if seg_job is not None:
                         try:
-                            seg_last, seg_job = seg_job.result(timeout=SEG_WAIT), None
+                            # while style-sampling (calibration, ~1 s) wait for this frame's own class map:
+                            # the class map makes the job slower than SEG_WAIT, so every result came a
+                            # frame late and never matched its landmarks (0 samples in 30 frames)
+                            seg_last, seg_job = seg_job.result(timeout=None if sampling else SEG_WAIT), None
                         except FutureTimeout:
                             prof.lap("seg_late")
-                    conf = seg_last
                     prof.lap("seg_wait")
+                # style sample: raw (not yet erased) frame, its own class map, facing the camera
+                if (sampling and res.face_landmarks and seg_last is not None and seg_last[2] == ts
+                        and seg_last[1] is not None and puppet_style.frontal(res.face_landmarks[0], w, h)):
+                    style_samples.append(puppet_style.sample(frame, res.face_landmarks[0], seg_last[1]))
+                if erasing:
+                    conf = seg_last[0] if seg_last is not None else None
                     if conf is not None:
                         box = None
                         if res.face_landmarks:
@@ -638,6 +696,19 @@ def main():
                             cal_fh = []
                             print(f"calibrated: yaw0 {math.degrees(neutral[0]):+.1f} deg, "
                                   f"pitch0 {math.degrees(neutral[1]):+.1f} deg")
+                            if styling:
+                                styling = False
+                                found = puppet_style.decide(style_samples)
+                                if found is None:
+                                    print("style: no frames facing the camera; keeping the current look. "
+                                          "Face the camera and press c (needs --preview) to retry")
+                                else:
+                                    puppet_style.save(args.style, found)
+                                    cfg.update(look(args, found))
+                                    renderer.submit(gpu.set_cfg, dict(cfg)).result()
+                                    head_key = None                      # re-render with the new look
+                                    print(f"style from {len(style_samples)} frames: "
+                                          f"{puppet_style.summary(found)} (saved to {args.style})")
                     last, lost = (s_pose(pose), s_expr(expr)), 0
                 else:
                     lost += 1
@@ -718,6 +789,7 @@ def main():
                         print(f"--neck {args.neck:.2f}")
                     if key == ord("c"):
                         calib, cal_fh = [], []
+                        styling, style_samples = can_style, []
                         print("recalibrating - look straight at the camera")
                     if key in (ord("w"), ord("s"), ord("="), ord("-")):
                         args.lift += {ord("w"): .01, ord("s"): -.01}.get(key, 0)

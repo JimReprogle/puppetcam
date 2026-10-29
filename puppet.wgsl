@@ -6,7 +6,7 @@
 // Felt, not plastic: no specular on fabric, wrap diffuse, grazing sheen, fiber albedo/normal noise,
 // AO, soft shadows, and a fuzzy fiber halo on the silhouette instead of a hard edge.
 
-struct Params { v: array<vec4f, 10> };
+struct Params { v: array<vec4f, 11> };
 @group(0) @binding(0) var<uniform> P: Params;
 
 // decoded parameters (set once per fragment in fs)
@@ -26,6 +26,7 @@ var<private> g_phones: f32;
 var<private> g_shoulders: f32;
 var<private> g_closed: f32;     // 1 when the mouth is a closed line
 var<private> g_mustache: f32;
+var<private> g_fullbeard: f32;
 
 const M_SKIN = 0.0;
 const M_HAIR = 1.0;
@@ -171,7 +172,25 @@ fn skull(q: vec3f) -> vec2f {
     if (h > 0.0) {
         d -= h * (0.014 + 0.006 * vnoise(q * vec3f(70.0, 22.0, 70.0)));
     }
-    return vec2f(d, select(M_SKIN, M_HAIR, h > 0.5));
+    let b = beardAmt(q);
+    if (b > 0.0) {
+        d -= b * (0.016 + 0.01 * vnoise(q * vec3f(80.0, 12.0, 80.0)));
+    }
+    var mat = select(M_SKIN, M_BEARD, b > 0.5);
+    mat = select(mat, M_HAIR, h > 0.5);
+    return vec2f(d, mat);
+}
+
+// full beard (auto-style or --full-beard): a raised fur shell over the lower face and jowls, leaving
+// the upper lip to the separate mustache
+fn beardAmt(q: vec3f) -> f32 {
+    if (g_fullbeard < 0.5) {
+        return 0.0;
+    }
+    let lower = 1.0 - smoothstep(-0.12, -0.09, q.y);
+    let front = smoothstep(-0.06, 0.0, q.z);
+    let lip = (1.0 - smoothstep(0.10, 0.13, abs(q.x))) * smoothstep(-0.185, -0.165, q.y);
+    return lower * front * (1.0 - lip);
 }
 
 // brow line ends for the +x side (mirrored): brow-up raises it, brow-down pulls the inner end down
@@ -415,8 +434,11 @@ fn albedo(mat: f32) -> vec3f {
     if (mat == M_HAIR) {
         return P.v[4].xyz;
     }
-    if (mat == M_BEARD || mat == M_BROW) {
+    if (mat == M_BEARD) {
         return P.v[5].xyz;
+    }
+    if (mat == M_BROW) {
+        return P.v[9].yzw;
     }
     if (mat == M_EYE) {
         return vec3f(0.85, 0.85, 0.83);
@@ -556,6 +578,7 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     g_phones = P.v[6].w;
     g_shoulders = P.v[7].x;
     g_mustache = P.v[9].x;
+    g_fullbeard = P.v[10].x;
     g_closed = P.v[7].y;
     let F = P.v[7].z;
     let fuzz = P.v[7].w;

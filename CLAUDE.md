@@ -8,6 +8,7 @@ and writes frames to the OBS Virtual Camera via `pyvirtualcam` for Teams/Zoom. m
 puppetcam.py            # capture, tracking, erase, compositing, CLI (~590 lines)
 puppet_gpu.py           # GpuPuppet: wgpu device, uniforms, render + readback, CPU nose projection
 puppet.wgsl             # the puppet: raymarched signed-distance shapes + fleece shading
+puppet_style.py         # auto-style: facial hair + hair/beard/brow colors from calibration frames
 tests/render_check.py   # offline render regression harness (no camera needed; needs the GPU)
 face_landmarker.task    # auto-downloaded on first run
 selfie_multiclass_256x256.tflite # person segmenter, auto-downloaded on first run (16 MB)
@@ -69,6 +70,22 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
    re-rendered per 1.5° on the worker), rescaled to the face size, `blit`, then `cast_head_shadow`.
 9. `composite()` warps/blends the head canvas inside its ROI only (`warp_roi`).
 10. `vcam.send(frame)`; preview + keys.
+
+## Auto-style (`puppet_style.py`)
+
+- During calibration (first 30 detections, or `c`), near-frontal frames (|yaw|,|pitch| < 15° to the camera)
+  are sampled: the segmenter job also returns its argmax class map, and the frame waits for its own result
+  (else the slower class-map job always lands a frame late and never matches: 0/30 samples).
+- Facial hair by **chroma**, not segmenter class (it labels a goatee "body-skin", brows "face-skin"): share of
+  pixels with Lab chroma < 0.5 × forehead chroma per landmark region (lips cut out). Thresholds: mustache 0.2
+  (shaved 0.02, mustache 0.33+), goatee 0.25 (0.39+), full beard 0.45 on the min of both jaw sides (0.12–0.21).
+- Colors relative to the subject's skin lightness (exposure cancels) → felt names (`hair_name` tiers). Head hair
+  = eroded hair-class median; beard = lit strands (p75) in detected regions only, minus clothes/background
+  (a dark shirt passes as "hair"); goatee color also sampled below the chin (it hangs off the mesh).
+- Not detected on purpose: skin tone (lighting swings it), head-hair coverage (owner chose the widow's peak).
+- Saved to `puppet_style.json` (gitignored); later starts load it. Precedence in `look()`: defaults ← style ←
+  explicit switches. No frontal frames → current look kept, hint printed. Owner's camera sits ~30° off-axis:
+  face it during the first second (or press `c` in `--preview`).
 
 ## Coordinate systems — read before touching geometry
 
@@ -133,6 +150,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Multiclass segmenter, not `selfie_segmenter` | Head turned → single-class model dropped the torso (16 % coverage on one live frame, <80 % on 4 % of clip frames) → real shirt strips around the puppet |
 | Person = max of person classes, never 1 − background | 1 − background floors at 0.084 on empty room → zero "clear background" pixels → gain match and plate alignment silently stop |
 | Never block on the segmenter beyond `SEG_WAIT` | GPU contention with the puppet renders spiked waits to 26 ms (frame p95 50 ms) |
+| …except while style-sampling: wait for the frame's own class map | Late results never matched their landmarks: 0 style samples |
+| Style sampled only from near-frontal frames | Turned 30°, the goatee region landed on neck shadow → light-gray goatee read "black" |
 
 Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 
@@ -157,9 +176,10 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | Switch | Default | Notes |
 |---|---|---|
 | `--skin` light/medium/tan/deep | medium | |
-| `--hair`, `--beard` gray/salt/white/brown/black | salt / gray | |
-| `--no-beard`, `--no-glasses`, `--no-headphones`, `--no-body`, `--no-erase` | off | flags |
-| `--mustache` | off | owner has no mustache (2026-10-29) |
+| `--hair`, `--beard`, `--brows` gray/salt/white/brown/black | auto (else salt / gray / = beard) | override auto-style |
+| `--no-beard`, `--full-beard`, `--mustache`, `--no-mustache` | auto | override detected facial hair |
+| `--style`, `--restyle`, `--no-auto-style` | `puppet_style.json` | style file; re-detect; ignore detection |
+| `--no-glasses`, `--no-headphones`, `--no-body`, `--no-erase` | off | flags |
 | `--shirt` blue/navy/red/green/plaid-gray | blue | plaid-gray is solid gray |
 | `--lid` | 0.35 | 0–0.9 |
 | `--scale` | 2.4 | head size vs face |

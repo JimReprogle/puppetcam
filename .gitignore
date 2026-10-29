@@ -4,6 +4,7 @@ __pycache__/
 # models are auto-downloaded on first run
 *.task
 *.tflite
-# personal room photo
+# personal room photo and detected look
 empty_room.png
+puppet_style.json
 .DS_Store
