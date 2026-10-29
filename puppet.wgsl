@@ -49,7 +49,11 @@ const M_NECK = 14.0;
 const HINGE = vec3f(0.0, -0.165, -0.06);
 const UP_ANG = 0.48;
 const JAW_ANG = 0.2;
-const DROOP = 0.9;     // hinge line drop toward the mouth corners (downturned mouth)
+const DROOP = 0.9;     // hinge line drop toward the mouth corners at rest (downturned mouth)
+const SMILE_UP = 2.4;  // smile (corners = +1) turns the curve from DROOP to -1.4 * DROOP (upturned)
+const FROWN_DOWN = 0.5; // frown (corners = -1) deepens it to 1.5 * DROOP
+const SMILE_LIFT_CUT = 0.45; // smiling, the upper head lifts 45 % less (must match puppet_gpu.py)
+const SMILE_JAW = 1.2;  // ...and the jaw drops 2.2x as far
 const EYE_R = 0.056;
 const EYE_C = vec3f(0.082, 0.07, 0.175);
 
@@ -140,6 +144,16 @@ fn vnoise(x: vec3f) -> f32 {
 
 // ------------------------------------------------------------------ head (local frame, mouth closed)
 
+// mouth line curvature: hinge line y = HINGE.y - mouthDroop() * x^2. Your smile/frown bends it, open or
+// closed (it used to bend only the drawn closed-mouth line; the mouth itself stayed downturned)
+fn smileUpper() -> f32 {
+    return 1.0 - SMILE_LIFT_CUT * max(g_corners, 0.0);     // mirrored in puppet_gpu.nose_point
+}
+
+fn mouthDroop() -> f32 {
+    return DROOP * (1.0 - SMILE_UP * max(g_corners, 0.0) + FROWN_DOWN * max(-g_corners, 0.0));
+}
+
 fn headBase(q: vec3f) -> f32 {
     let hy = 0.31 + 0.06 * g_long;
     var c = q - vec3f(0.0, -0.03, 0.0);
@@ -185,7 +199,9 @@ fn skull(q: vec3f) -> vec2f {
     var d = headBase(q);
     d = smin(d, sdEllipsoid(q - vec3f(0.0, 0.135, 0.165), vec3f(0.20, 0.045, 0.06)), 0.04);
     let ax = vec3f(abs(q.x), q.y, q.z);
-    d = smin(d, sdSphere(ax - vec3f(0.13, -0.10, 0.14), 0.085), 0.05);
+    // cheeks: a smile pushes them up and out (apple cheeks)
+    let sm = max(g_corners, 0.0);
+    d = smin(d, sdSphere(ax - vec3f(0.13 + 0.01 * sm, -0.10 + 0.035 * sm, 0.14 + 0.02 * sm), 0.085 + 0.012 * sm), 0.05);
     d = smin(d, sdEllipsoid(q - vec3f(0.0, -0.31, 0.12), vec3f(0.11, 0.08, 0.09)), 0.05);
     // jowls: heavy cheek masses sagging beside the chin, below the mouth corners
     d = smin(d, sdEllipsoid(ax - vec3f(0.165, -0.27, 0.11), vec3f(0.1, 0.12, 0.09)), 0.06);
@@ -356,27 +372,31 @@ fn headMap(pw: vec3f) -> vec2f {
     }
     // upper part: rotated up about the hinge; jaw: rotated down. Attached parts (eyes, glasses,
     // headphones, beard) move rigidly with their half
-    let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);
-    let ql = HINGE + rotX(q - HINGE, -JAW_ANG * g_mouth);
+    // smiling, the upper lip lifts less and the jaw drops more: flat top, deep U below
+    let upA = UP_ANG * g_mouth * smileUpper();
+    let jawA = JAW_ANG * g_mouth * (1.0 + SMILE_JAW * max(g_corners, 0.0));
+    let qu = HINGE + rotX(q - HINGE, upA);
+    let ql = HINGE + rotX(q - HINGE, -jawA);
     // the skull itself has a SOFT hinge: close to the hinge line, the rotation fades out toward the sides
     // of the head, so only the mouth opens. A rigid split opened the sides too: a dark seam running from
     // the mouth corner to the outline, and a notch where the jaw and upper outlines no longer met
     let side = smoothstep(0.04, 0.24, abs(q.x)) * (1.0 - smoothstep(0.0, 0.28, abs(q.y - HINGE.y)));
     let w = 1.0 - side;
-    let qsu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth * w);
-    let qsl = HINGE + rotX(q - HINGE, -JAW_ANG * g_mouth * w);
+    let qsu = HINGE + rotX(q - HINGE, upA * w);
+    let qsl = HINGE + rotX(q - HINGE, -jawA * w);
     // ONE skull, warped: a point takes the upper or the lower rotation by which side of the (downturned)
     // hinge line it is on. Two separately rotated half-skulls overlapped wherever the rotation was
     // partial and met in a crease running from the mouth corner to the outline. Where the rotation is
     // zero (sides, near the hinge) both warps agree, so the surface is seamless; inside the mouth they
     // differ and the cut faces (palate, jaw floor) form the opening, which tapers to closed corners
-    let hq = q.y - (HINGE.y - DROOP * q.x * q.x);
+    let droop = mouthDroop();
+    let hq = q.y - (HINGE.y - droop * q.x * q.x);
     var qs = qsl;
     if (hq > 0.0) {
         qs = qsu;
     }
     let sk = skull(qs);
-    let hs = qs.y - (HINGE.y - DROOP * qs.x * qs.x);       // hinge side in skull space
+    let hs = qs.y - (HINGE.y - droop * qs.x * qs.x);       // hinge side in skull space
     let cut = select(hs, -hs, hq > 0.0);                   // > 0: crossed into the other half = gap
     var r = vec2f(max(sk.x, cut), select(sk.y, M_MOUTH, cut > sk.x));
     // the field jumps across the hinge line inside the mouth: never step across it blindly. Only inside
@@ -522,7 +542,7 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
     var hairT = vec3f(0.0);
     if (mat == M_BROW) {
         // hair strands: fine light/dark striations across the growth direction, long along it
-        let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);   // brows ride the upper head
+        let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth * smileUpper());   // brows ride the upper head
         let side = select(-1.0, 1.0, qu.x > 0.0);
         let a = browInner();
         let t = clamp((abs(qu.x) - a.x) / (browOuter().x - a.x), 0.0, 1.0);
@@ -537,7 +557,7 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
         let tone = 0.75 + 0.45 * hash3(vec3f(lk.x * 3.1, 0.3, 7.7));
         alb *= (0.5 + 0.75 * st) * tone * mix(0.6, 1.15, lk.y);
         // world-space strand tangent for the sheen: undo the hinge, then pitch and yaw
-        hairT = rotY(rotX(rotX(T, -UP_ANG * g_mouth), g_pitch), g_yaw);
+        hairT = rotY(rotX(rotX(T, -UP_ANG * g_mouth * smileUpper()), g_pitch), g_yaw);
     }
     if (felt) {
         // fleece: fine pile + coarse mottle in color, fiber bumps in the normal
@@ -557,15 +577,15 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
     }
     if (mat == M_EYE) {
         let side = select(-1.0, 1.0, q.x > 0.0);
-        let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);
+        let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth * smileUpper());
         let dir = normalize(qu - vec3f(EYE_C.x * side, EYE_C.y, EYE_C.z));
         let gz = normalize(vec3f(g_gaze.x * 0.45, -g_gaze.y * 0.35, 1.0));
         let k = dot(dir, gz);
         alb = mix(alb, vec3f(0.012), smoothstep(0.935, 0.945, k));
     }
     if (mat == M_SKIN && g_closed > 0.5 && g_mode < 0.5) {
-        // closed mouth: a stitched line along the hinge, corners bent by smile/frown
-        let line = HINGE.y - DROOP * q.x * q.x + g_corners * 0.035 * (q.x * q.x) / (0.12 * 0.12);
+        // closed mouth: a stitched line along the hinge curve (bent by smile/frown via mouthDroop)
+        let line = HINGE.y - mouthDroop() * q.x * q.x;
         let lm = (1.0 - smoothstep(0.0025, 0.0055, abs(q.y - line))) *
                  (1.0 - smoothstep(0.10, 0.12, abs(q.x))) * smoothstep(0.12, 0.17, q.z);
         alb *= 1.0 - 0.8 * lm;

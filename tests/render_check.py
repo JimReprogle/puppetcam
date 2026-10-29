@@ -18,6 +18,7 @@ Checks (each one exists because the bug it guards against actually shipped once)
   hairline  - --hairline types differ as named (widow/straight > receding > bald)
   roll      - the torso tilts the same way as the head, pinned at the base of the neck
   outline   - turned, open mouth: the mouth ends inside the cheek (the hinge once split the sides)
+  smile     - smiling turns the mouth up (open or closed), frowning turns it down
   mouth     - the open mouth is a cavity: depth through the opening well behind the lips (a sack read as a red pillow)
   timing    - GPU head/body render cost (report only)
 """
@@ -111,9 +112,10 @@ def check_nose(r):
     """The nose point drives horizontal placement; if the CPU projection drifts off the
     rendered nose, the puppet slides sideways against your face."""
     bad = []
-    for mo in (0.0, 0.8):
+    # smiling open mouth too: the upper head lifts less then, and nose_point must mirror it
+    for mo, cn in ((0.0, 0.0), (0.8, 0.0), (0.8, 1.0)):
         for yaw, pitch in ((0, 0), (-30, 0), (30, 0), (0, -20), (0, 20), (25, 15)):
-            c, a, n = r["g"].head(state(mo, yaw, pitch))
+            c, a, n = r["g"].head(state(mo, yaw, pitch, corners=cn))
             x, y = int(round(n[0])), int(round(n[1]))
             # nose tip: opaque and skin colored (not glasses/mustache/background)
             px = c[y, x].astype(int)
@@ -121,7 +123,7 @@ def check_nose(r):
             hue_ok = np.argmax(px) == np.argmax(skin) and np.argmin(px) == np.argmin(skin)
             if a[y, x] < 0.99 or not hue_ok:
                 bad.append((mo, yaw, pitch, tuple(px), round(float(a[y, x]), 2)))
-    return not bad, f"nose points off the nose: {len(bad)}/12 {bad[:3]}"
+    return not bad, f"nose points off the nose: {len(bad)}/18 {bad[:3]}"
 
 
 def check_felt(r):
@@ -287,6 +289,31 @@ def check_outline(r):
     return worst > 8, f"closest mouth-to-outline gap, near side: {worst} px (> 8)"
 
 
+def mouth_curve(g, corners, mouth=0.5):
+    """Open mouth's centreline (midway between its top and bottom edges): ends minus centre, px
+    (+ = ends lower = downturned). The top edge alone always arches (the upper head lifts most in the
+    middle), so it can't tell a smile from a frown."""
+    g.debug_view = 3
+    c, a, _ = g.head(state(mouth, corners=corners))
+    g.debug_view = 0
+    m = (a > 0.999) & (np.abs(c[..., 2].astype(int) - 16 * M_MOUTH) <= 1)
+    cols = np.nonzero(m.any(0))[0]
+    mid = np.array([(np.argmax(m[:, x]) + len(m) - 1 - np.argmax(m[::-1, x])) / 2 for x in cols], np.float32)
+    n = len(cols)
+    centre = np.median(mid[int(0.4 * n): int(0.6 * n)])
+    ends = np.median(np.concatenate([mid[: int(0.12 * n)], mid[-int(0.12 * n):]]))
+    return float(ends - centre)
+
+
+def check_smile(r):
+    """Smiling must turn the puppet's mouth up and frowning down, open or not (the corners signal used to
+    only bend the closed-mouth line; the mouth shape stayed downturned)."""
+    g = GpuPuppet(dict(CFG, headphones=False, glasses=False), p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN, ss=1)
+    k = {c: mouth_curve(g, c) for c in (-1.0, 0.0, 1.0)}
+    ok = k[1.0] < 0 and k[1.0] < k[0.0] - 10 and k[-1.0] > k[0.0] + 5
+    return ok, f"open-mouth centreline ends below centre, px: frown {k[-1.0]:.0f} / neutral {k[0.0]:.0f} / smile {k[1.0]:.0f} (smile < 0)"
+
+
 def check_roll(r):
     """The torso tilts the same way as the head and keeps its collar point pinned (the neck base)."""
     w, h, ox, oy = 400, 300, 200, 100
@@ -377,7 +404,7 @@ def main():
                      ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("neck", check_neck), ("erase", check_erase),
                      ("plate", check_plate_mismatch), ("style", check_style),
                      ("hairline", check_hairline), ("roll", check_roll), ("mouth", check_mouth),
-                     ("outline", check_outline),
+                     ("outline", check_outline), ("smile", check_smile),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok

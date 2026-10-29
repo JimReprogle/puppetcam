@@ -103,6 +103,8 @@ Each frame goes through this pipeline:
    - **Lighting** is felt-like: matte light, a soft sheen at grazing angles, fibre texture, soft
      shadows, ambient occlusion and a fuzzy outline.
    - The **eyebrows** are rendered as hair locks.
+   - **Smiling and frowning** bend the mouth, open or closed. Smiling makes an open-mouthed grin
+     and raises the cheeks.
 
    Renders run on a worker thread. The head re-renders only when your pose or expression changes by a
    full step.

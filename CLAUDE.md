@@ -125,7 +125,7 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 3. **Hinge** (`headMap`): closed mouth = one unsplit skull. Open: attached parts move rigidly with their
    half (upper rotated up `UP_ANG*mouth` 0.48, jaw down `JAW_ANG*mouth` 0.2 about `HINGE`), but the skull is
    ONE warped field: a point takes the upper or lower rotation by which side of the downturned hinge line
-   `y = HINGE.y − DROOP·x²` it is on, and the rotation fades to 0 toward the sides near the hinge
+   `y = HINGE.y − mouthDroop()·x²` it is on, and the rotation fades to 0 toward the sides near the hinge
    (`smoothstep(0.04, 0.24, |x|)` × falloff over 0.28 in y), so only the mouth opens, as a tapered lens.
    Cut faces (palate, jaw floor) = mouth material; they form the cavity. A step limiter (|hq| + 0.003, only
    at/inside the skull) stops rays jumping the field discontinuity. Tongue sunk into the jaw floor.
@@ -148,6 +148,7 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Mouth corners must be closed (by the fading hinge; `holes` check) | Background visible through the corners of the open mouth when turned |
 | No filler in the mouth gap; corners closed by the hinge rotation fading out; `mouth` check measures depth through the opening (0.212 vs 0.067 for the old pillow) | A sack bulged forward ("red pillow"); its offcut floated as a lump; flat web walls read as skin flaps |
 | One warped skull, not two rotated halves unioned; rotation fully faded inside the outline (0.24 < jaw ~0.27); `outline` check (mouth ≥ 8 px from the near outline; screenshot version: 0) | Rigid split opened the sides: seam from mouth corner to outline + jaw notch; overlapping halves creased; a fade ending at 0.30 left a speck on the outline |
+| Smile/frown (`corners` = 1.6·(smile − frown) blendshapes) bends the hinge curve itself: `mouthDroop()` = DROOP·(1 − 2.4·smile + 0.5·frown); smiling, upper lift ×(1 − 0.45) and jaw ×2.2 (open "D" grin), cheeks rise; `SMILE_LIFT_CUT` mirrored in `nose_point`; `smile` check (centreline ends: frown 50 / neutral 36 / smile −40 px) | Smile only bent the drawn closed-mouth line; open mouth identical at any expression |
 | Closed mouth never splits the skull | Normal samples read the cut plane: thin line along the closed hinge |
 | March out of steps while still inside the bound = hit, not miss | Rays skimming the lip edge ran out of 160 steps → partial-alpha see-through specks in the open mouth |
 | Exposure: front-lit face ≈ albedo (key 0.88, fill 0.3); `felt` check counts clipped skin | Skin red channel clipped on 21k px: hot plastic look |

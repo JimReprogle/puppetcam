@@ -18,6 +18,7 @@ SHADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "puppet.wgsl")
 F_HEAD = 3.0                          # camera distance in head units (mild perspective)
 HINGE = np.array((0.0, -0.165, -0.06))
 UP_ANG = 0.48                         # must match puppet.wgsl
+SMILE_LIFT_CUT = 0.45                 # must match puppet.wgsl
 NOSE = np.array((0.0, -0.025, 0.325))  # nose tip, head local
 BODY_UNIT = 300                       # body sprite px per body unit (main rescales)
 HAIRLINES = ("widow", "straight", "receding", "bald")   # --hairline; index order matches puppet.wgsl
@@ -122,7 +123,8 @@ class GpuPuppet:
         """Projected nose tip in output px (mirrors the shader's hinge, rotation and camera)."""
         n = NOSE.copy()
         if st.get("mouth", 0.0) >= self.mouth_open:
-            n = HINGE + _rot_x(n - HINGE, -UP_ANG * st["mouth"])
+            lift = 1.0 - SMILE_LIFT_CUT * max(st.get("corners", 0.0), 0.0)   # smileUpper() in the shader
+            n = HINGE + _rot_x(n - HINGE, -UP_ANG * st["mouth"] * lift)
         n = _rot_y(_rot_x(n, st["pitch"]), st["yaw"])
         k = F_HEAD / (F_HEAD - n[2])
         return np.array(((0.5 + n[0] * k) * self.S, (0.40 - n[1] * k) * self.S + self.padt), np.float32)
