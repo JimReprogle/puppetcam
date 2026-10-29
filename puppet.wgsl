@@ -29,6 +29,7 @@ var<private> g_mustache: f32;
 var<private> g_fullbeard: f32;
 var<private> g_necktop: f32;    // body units above the collar
 var<private> g_hairline: f32;   // 0 widow, 1 straight, 2 receding, 3 bald
+var<private> g_forehead: f32;   // 0..1: front hairline moved back
 
 const M_SKIN = 0.0;
 const M_HAIR = 1.0;
@@ -49,7 +50,8 @@ const M_NECK = 14.0;
 const HINGE = vec3f(0.0, -0.165, -0.06);
 const UP_ANG = 0.48;
 const JAW_ANG = 0.2;
-const DROOP = 0.9;      // hinge line drop toward the mouth corners (downturned mouth)
+const WEB_X = 0.23;     // cheek webs fill the mouth gap only outside |x| > WEB_X; the middle stays open
+const DROOP = 0.9;     // hinge line drop toward the mouth corners (downturned mouth)
 const EYE_R = 0.056;
 const EYE_C = vec3f(0.082, 0.07, 0.175);
 
@@ -165,6 +167,8 @@ fn hairAmt(q: vec3f) -> f32 {
         // receded at the temples (bald and receding)
         front_hl = 0.22 - 1.6 * q.x * q.x;
     }
+    // --forehead moves the front hairline up and back over the crown (bigger forehead)
+    front_hl += 0.16 * g_forehead;
     var hair = smoothstep(-0.008, 0.008, q.y - mix(-0.14, front_hl, front));
     if (g_hairline > 1.5 && g_hairline < 2.5) {
         // receding: bald dome over the forehead and front crown
@@ -359,13 +363,15 @@ fn headMap(pw: vec3f) -> vec2f {
     r = U(r, vec2f(max(sl.x, cutL), select(sl.y, M_MOUTH, cutL > sl.x)));
     r = U(r, lowerParts(ql));
     if (g_mouth > 0.0) {
-        // mouth sack between palate and jaw; its outer sides are the cheek web
+        // cheek webs: only the outer walls of a sack that spans the gap. The palate and jaw floor already
+        // form a cavity that closes at the hinge; a full sack's front bulged into the mouth (convex "red
+        // pillow"). Bent down at the corners like the hinge line and as wide as the jowly head, else
+        // the open mouth is see-through at the corners
         let sk = vec3f(0.0, HINGE.y + 0.03 * g_mouth, -0.02);
-        // bent down at the corners like the hinge line, and as wide as the jowly head: otherwise the
-        // open mouth is see-through at the corners and cracks along the jaw floor
         let qs = vec3f(q.x, q.y + DROOP * q.x * q.x, q.z);
         let sack = sdEllipsoid(qs - sk, vec3f(0.275, 0.014 + 0.1 * g_mouth, 0.19)) * 0.8;
-        r = U(r, vec2f(sack, select(M_MOUTH, M_WEB, abs(q.x) > 0.17)));
+        let web = max(sack, WEB_X - abs(q.x));
+        r = U(r, vec2f(web, M_WEB));
     }
     return r;
 }
@@ -481,7 +487,9 @@ fn albedo(mat: f32) -> vec3f {
         return vec3f(0.62, 0.17, 0.2);
     }
     if (mat == M_WEB) {
-        return P.v[3].xyz * 0.55;
+        // inside of the cheeks: mouth lining, a touch lighter than the palate (skin-colored webs read as
+        // brown fangs at the mouth corners)
+        return vec3f(0.22, 0.03, 0.04);
     }
     if (mat == M_BUTTON) {
         return vec3f(0.8, 0.8, 0.78);
@@ -535,6 +543,10 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
             // strands: streaky along the growth direction
             alb *= 0.65 + 0.6 * vnoise(q * vec3f(260.0, 40.0, 260.0));
         }
+    }
+    if (mat == M_MOUTH || mat == M_WEB || mat == M_TONGUE) {
+        // inside the mouth: darker the deeper toward the hinge, so the cavity recedes
+        alb *= mix(0.2, 1.0, smoothstep(HINGE.z, 0.2, q.z));
     }
     if (mat == M_EYE) {
         let side = select(-1.0, 1.0, q.x > 0.0);
@@ -603,6 +615,7 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     g_fullbeard = P.v[10].x;
     g_necktop = P.v[10].y;
     g_hairline = P.v[10].z;
+    g_forehead = P.v[10].w;
     g_closed = P.v[7].y;
     let F = P.v[7].z;
     let fuzz = P.v[7].w;

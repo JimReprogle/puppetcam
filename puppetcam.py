@@ -522,6 +522,8 @@ def main():
     ap.add_argument("--brows", choices=HAIR)
     ap.add_argument("--hairline", choices=HAIRLINES, default="widow",
                     help="widow's peak, straight, receding (bald front crown), bald (side/back fringe)")
+    ap.add_argument("--forehead", type=float, default=0.0,
+                    help="0..1: move the front hairline up and back (bigger forehead); ~0.35-0.5 keeps the peak visible")
     ap.add_argument("--no-beard", action="store_true", help="no goatee or full beard")
     ap.add_argument("--full-beard", action="store_true")
     ap.add_argument("--mustache", action="store_true")
@@ -569,7 +571,8 @@ def main():
            "long": float(np.clip(args.long, 0, 1.2)), "shirt": SHIRT[args.shirt],
            "pez": float(np.clip(args.pez, 0, 1)),
            "shoulders": float(np.clip(args.shoulders, 0.5, 1.2)),
-           "headphones": not args.no_headphones, "hairline": args.hairline}
+           "headphones": not args.no_headphones, "hairline": args.hairline,
+           "forehead": float(np.clip(args.forehead, 0, 1))}
     cfg.update(look(args, style))
 
     backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)

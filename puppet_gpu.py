@@ -75,7 +75,8 @@ class GpuPuppet:
         v[7, 2:] = extra[:2]
         v[8] = extra[2:]
         v[9] = (1.0 if cfg["mustache"] else 0.0, *_lin(cfg["brow"]))
-        v[10, :3] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0), HAIRLINES.index(cfg["hairline"]))
+        v[10] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0), HAIRLINES.index(cfg["hairline"]),
+                 cfg["forehead"])
         return v
 
     def set_cfg(self, cfg):

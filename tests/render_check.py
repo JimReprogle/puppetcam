@@ -17,6 +17,7 @@ Checks (each one exists because the bug it guards against actually shipped once)
   style     - auto-style facial-hair and color decisions; command-line switches override them
   hairline  - --hairline types differ as named (widow/straight > receding > bald)
   roll      - the torso tilts the same way as the head, pinned at the base of the neck
+  mouth     - the open mouth is a cavity, not a forward bulge (a full mouth sack read as a red pillow)
   timing    - GPU head/body render cost (report only)
 """
 import argparse
@@ -43,7 +44,7 @@ from puppet_gpu import GpuPuppet
 CFG = {"skin": p.SKIN["medium"], "hair": p.HAIR["salt"], "beard": p.HAIR["gray"], "beard_on": True,
        "glasses": True, "long": 1.0, "shirt": p.SHIRT["blue"], "pez": 1.0, "shoulders": 0.8,
        "headphones": True, "mustache": False, "full_beard": False, "brow": p.HAIR["gray"],
-       "hairline": "widow"}
+       "hairline": "widow", "forehead": 0.0}
 
 
 def state(mouth=0.0, yaw=0.0, pitch=0.0, brow=(0.0, 0.0), corners=0.0, lid=0.35):
@@ -233,7 +234,29 @@ def check_hairline(r):
         top = (np.abs(c.astype(np.int16) - hair).max(-1) < 70) & (a > 0.9)
         counts[hl] = int(top[: c.shape[0] // 2].sum())
     ok = counts["bald"] < counts["receding"] < min(counts["widow"], counts["straight"])
-    return ok, f"hair pixels (front view, top half): {counts}"
+    # --forehead moves the hairline back: strictly less hair as it grows
+    fh = []
+    for fo in (0.0, 0.5, 1.0):
+        g = renderer(dict(CFG, forehead=fo, hair=p.HAIR["white"], headphones=False, glasses=False))
+        c, a, _ = g.head(state())
+        top = (np.abs(c.astype(np.int16) - hair).max(-1) < 70) & (a > 0.9)
+        fh.append(int(top[: c.shape[0] // 2].sum()))
+    ok = ok and fh[0] > fh[1] > fh[2]
+    return ok, f"hair pixels (front view, top half): {counts}; --forehead 0/0.5/1: {fh}"
+
+
+def check_mouth(r):
+    """The open mouth is a cavity: facing the camera its middle must not be brighter than its sides.
+    A full mouth sack bulged forward into a lit "red pillow" (middle/edge 1.13; concave ~0.98)."""
+    c, a, _ = r["g"].head(state(0.9))
+    hsv = cv2.cvtColor(c, cv2.COLOR_BGR2HSV)
+    red = (((hsv[..., 0] < 8) | (hsv[..., 0] > 170)) & (hsv[..., 1] > 120) & (a > 0.9))
+    xs = np.nonzero(red)[1]
+    cx, w = int(np.median(xs)), int(xs.max() - xs.min())
+    col = np.abs(np.arange(c.shape[1])[None, :] - cx)
+    v = hsv[..., 2].astype(float)
+    ratio = v[red & (col < 0.15 * w)].mean() / v[red & (col > 0.35 * w)].mean()
+    return ratio < 1.05, f"open mouth middle/edge brightness {ratio:.2f} (concave < 1.05)"
 
 
 def check_roll(r):
@@ -325,7 +348,7 @@ def main():
     for name, fn in (("holes", check_holes), ("strays", check_strays), ("smooth", check_smooth),
                      ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("neck", check_neck), ("erase", check_erase),
                      ("plate", check_plate_mismatch), ("style", check_style),
-                     ("hairline", check_hairline), ("roll", check_roll),
+                     ("hairline", check_hairline), ("roll", check_roll), ("mouth", check_mouth),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok

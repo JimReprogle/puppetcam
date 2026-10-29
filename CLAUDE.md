@@ -118,8 +118,9 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
    across the flow, per-lock tone, dark roots, and a Kajiya-Kay sheen. **Lower parts**: goatee, tongue.
 3. **Hinge** (`headMap`): skull evaluated twice, upper rotated up `UP_ANG*mouth` (0.48) about `HINGE`, jaw
    down `JAW_ANG*mouth` (0.2); each half cut by the hinge surface `y = HINGE.y − DROOP·x²` (downturned mouth,
-   open or closed), cut faces = mouth material; a mouth sack bent by the same curve (dark red centre,
-   darker-skin cheek web at the sides) fills the gap.
+   open or closed), cut faces = mouth material. The palate and jaw floor form the cavity (it closes at the
+   hinge); only cheek webs (outer walls of a sack bent by the same curve, |x| > `WEB_X`) close the
+   corners, in mouth-lining color. Mouth materials darken with depth toward the hinge.
 4. **Fleece shading** `shade`: sRGB→linear albedo × fiber noise; bumped normal; wrap diffuse key with soft
    shadow (28-step SDF march), hemispheric fill × AO; grazing sheen instead of specular. Only eyes, glasses,
    headphones and buttons get a highlight. Closed mouth = stitched line along the hinge, bent by `corners`.
@@ -134,6 +135,7 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 |---|---|
 | Closed mouth line XOR open hinge, single threshold `MOUTH_OPEN` (Python zeroes `mouth` below it) | Two mouths at small openings |
 | Mouth sack x-radius ≥ jowly head half-width (0.275) and bent by `DROOP` like the hinge | Background visible through the corners of the open mouth when turned |
+| Only the sack's outer walls (`WEB_X` 0.23); middle open; `mouth` check | A full sack bulged forward: a convex lit "red pillow" in the mouth (middle/edge 1.13 → 0.98) |
 | March out of steps while still inside the bound = hit, not miss | Rays skimming the lip edge ran out of 160 steps → partial-alpha see-through specks in the open mouth |
 | Exposure: front-lit face ≈ albedo (key 0.88, fill 0.3); `felt` check counts clipped skin | Skin red channel clipped on 21k px: hot plastic look |
 | No specular on felt materials (`isFelt`) | Plastic look (owner's stated failure mode) |
@@ -181,6 +183,7 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--hair`, `--beard`, `--brows` gray/salt/white/brown/black | auto (else salt / gray / = beard) | override auto-style |
 | `--no-beard`, `--full-beard`, `--mustache`, `--no-mustache` | auto | override detected facial hair |
 | `--hairline` widow/straight/receding/bald | widow | not auto-detected (owner's choice) |
+| `--forehead` | 0.0 | 0–1, moves the front hairline up and back; 0.35–0.5 keeps the widow's peak visible |
 | `--style`, `--restyle`, `--no-auto-style` | `puppet_style.json` | style file; re-detect; ignore detection |
 | `--no-glasses`, `--no-headphones`, `--no-body`, `--no-erase` | off | flags |
 | `--shirt` blue/navy/red/green/plaid-gray | blue | plaid-gray is solid gray |
