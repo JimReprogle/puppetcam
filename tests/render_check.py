@@ -17,6 +17,7 @@ Checks (each one exists because the bug it guards against actually shipped once)
   style     - auto-style facial-hair and color decisions; command-line switches override them
   hairline  - --hairline types differ as named (widow/straight > receding > bald)
   roll      - the torso tilts the same way as the head, pinned at the base of the neck
+  outline   - turned, open mouth: the mouth ends inside the cheek (the hinge once split the sides)
   mouth     - the open mouth is a cavity: depth through the opening well behind the lips (a sack read as a red pillow)
   timing    - GPU head/body render cost (report only)
 """
@@ -264,6 +265,28 @@ def check_mouth(r):
     return worst > 0.08, f"opening depth behind the lips (head units, worst pose): {worst:.3f} (> 0.08)"
 
 
+M_MOUTH = 8                     # puppet.wgsl material id
+
+
+def check_outline(r):
+    """Turned with the mouth open, the mouth must end inside the cheek. The rigid hinge split opened the
+    sides of the head too: the mouth's cut face ran out to the outline as a seam, with a notch in the jaw.
+    Measures (material debug view) the closest the mouth material gets to the near-side outline, px."""
+    # no supersampling: every pixel is one ray, so ids are exact (downsampling averaged neighbouring ids,
+    # e.g. brow and skin, into the mouth's)
+    g = GpuPuppet(dict(CFG, headphones=False, glasses=False), p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN, ss=1)
+    worst = 1e9
+    for mo, yaw, pitch in ((0.7, 25, -10), (0.7, 32, -15), (1.0, 30, 0)):
+        g.debug_view = 3
+        c, a, _ = g.head(state(mo, yaw, pitch))
+        g.debug_view = 0
+        mouth = (a > 0.999) & (np.abs(c[..., 2].astype(int) - 16 * M_MOUTH) <= 1)   # hits only (halo keeps its color)
+        for y in np.nonzero(mouth.any(1))[0]:
+            edge = int(np.argmax(a[y] > 0.5))
+            worst = min(worst, int(np.argmax(mouth[y])) - edge)
+    return worst > 8, f"closest mouth-to-outline gap, near side: {worst} px (> 8)"
+
+
 def check_roll(r):
     """The torso tilts the same way as the head and keeps its collar point pinned (the neck base)."""
     w, h, ox, oy = 400, 300, 200, 100
@@ -354,6 +377,7 @@ def main():
                      ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("neck", check_neck), ("erase", check_erase),
                      ("plate", check_plate_mismatch), ("style", check_style),
                      ("hairline", check_hairline), ("roll", check_roll), ("mouth", check_mouth),
+                     ("outline", check_outline),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok

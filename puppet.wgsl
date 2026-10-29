@@ -49,7 +49,6 @@ const M_NECK = 14.0;
 const HINGE = vec3f(0.0, -0.165, -0.06);
 const UP_ANG = 0.48;
 const JAW_ANG = 0.2;
-const CORNER_BLEND = 0.14;  // how far the lips blend together at the mouth corners (x mouth opening)
 const DROOP = 0.9;     // hinge line drop toward the mouth corners (downturned mouth)
 const EYE_R = 0.056;
 const EYE_C = vec3f(0.082, 0.07, 0.175);
@@ -350,21 +349,40 @@ fn lowerParts(q: vec3f) -> vec2f {
 fn headMap(pw: vec3f) -> vec2f {
     // world -> head local (inverse of yaw then pitch)
     let q = rotX(rotY(pw, -g_yaw), -g_pitch);
-    // upper part: rotated up about the hinge; jaw: rotated down
+    if (g_mouth <= 0.0) {
+        // closed: one solid skull. Splitting it at the hinge anyway put a thin line of wrong normals
+        // along the seam (normal samples just inside the skin read the cut plane)
+        return U(U(skull(q), upperParts(q)), lowerParts(q));
+    }
+    // upper part: rotated up about the hinge; jaw: rotated down. Attached parts (eyes, glasses,
+    // headphones, beard) move rigidly with their half
     let qu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth);
     let ql = HINGE + rotX(q - HINGE, -JAW_ANG * g_mouth);
-    // the hinge line curves down toward the corners: a downturned mouth, closed or open
-    let su = skull(qu);
-    let cutU = HINGE.y - DROOP * qu.x * qu.x - qu.y;
-    let du = vec2f(max(su.x, cutU), select(su.y, M_MOUTH, cutU > su.x));
-    let sl = skull(ql);
-    let cutL = ql.y - (HINGE.y - DROOP * ql.x * ql.x);
-    let dl = vec2f(max(sl.x, cutL), select(sl.y, M_MOUTH, cutL > sl.x));
-    // mouth corners: the two halves blend into one another (fabric stretched between the lips), so the
-    // opening is a rounded lens and the corners are never see-through when turned. Middle: a clean gap.
-    // (Flat "web" walls read as skin flaps; a sack in the gap read as a lump or a red pillow.)
-    let k = CORNER_BLEND * g_mouth * smoothstep(0.1, 0.26, abs(q.x)) + 1e-4;
-    var r = vec2f(smin(du.x, dl.x, k), select(dl.y, du.y, du.x < dl.x));
+    // the skull itself has a SOFT hinge: close to the hinge line, the rotation fades out toward the sides
+    // of the head, so only the mouth opens. A rigid split opened the sides too: a dark seam running from
+    // the mouth corner to the outline, and a notch where the jaw and upper outlines no longer met
+    let side = smoothstep(0.04, 0.24, abs(q.x)) * (1.0 - smoothstep(0.0, 0.28, abs(q.y - HINGE.y)));
+    let w = 1.0 - side;
+    let qsu = HINGE + rotX(q - HINGE, UP_ANG * g_mouth * w);
+    let qsl = HINGE + rotX(q - HINGE, -JAW_ANG * g_mouth * w);
+    // ONE skull, warped: a point takes the upper or the lower rotation by which side of the (downturned)
+    // hinge line it is on. Two separately rotated half-skulls overlapped wherever the rotation was
+    // partial and met in a crease running from the mouth corner to the outline. Where the rotation is
+    // zero (sides, near the hinge) both warps agree, so the surface is seamless; inside the mouth they
+    // differ and the cut faces (palate, jaw floor) form the opening, which tapers to closed corners
+    let hq = q.y - (HINGE.y - DROOP * q.x * q.x);
+    var qs = qsl;
+    if (hq > 0.0) {
+        qs = qsu;
+    }
+    let sk = skull(qs);
+    let hs = qs.y - (HINGE.y - DROOP * qs.x * qs.x);       // hinge side in skull space
+    let cut = select(hs, -hs, hq > 0.0);                   // > 0: crossed into the other half = gap
+    var r = vec2f(max(sk.x, cut), select(sk.y, M_MOUTH, cut > sk.x));
+    // the field jumps across the hinge line inside the mouth: never step across it blindly. Only inside
+    // or at the skull (max with sk.x): applied in open air it read as a near miss and drew a halo "sheet"
+    // sticking out of the head along the hinge line
+    r.x = min(r.x, max(abs(hq) + 0.003, sk.x));
     r = U(r, upperParts(qu));
     r = U(r, lowerParts(ql));
     return r;
@@ -647,6 +665,10 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     }
     if (hit) {
         let p = ro + rd * t;
+        if (P.v[11].x > 2.5) {
+            // debug view 3: material id in red (decode: round(r / 16))
+            return vec4f(map(p).y * 16.0 / 255.0, 0.0, 0.0, 1.0);
+        }
         if (P.v[11].x > 1.5) {
             // debug view 2: depth, encoded as (t - (F - 0.5)) in red (decode: F - 0.5 + r/255)
             return vec4f(clamp(t - (F - 0.5), 0.0, 1.0), 0.0, 0.0, 1.0);

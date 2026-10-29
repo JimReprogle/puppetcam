@@ -58,7 +58,7 @@ class GpuPuppet:
         self.bind = self.dev.create_bind_group(layout=self.pipe.get_bind_group_layout(0),
                                                entries=[{"binding": 0, "resource": {"buffer": self.ubuf}}])
         self.targets = {}
-        self.debug_view = 0                   # diagnostics: 1 material false color, 2 depth
+        self.debug_view = 0                   # diagnostics: 1 material false color, 2 depth, 3 material id
 
     def _params(self, st, mode, extra):
         cfg = self.cfg

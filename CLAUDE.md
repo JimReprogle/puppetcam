@@ -116,13 +116,16 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
    **Brows are hair, not fleece**: `BROW_LOCKS`=24 tapered two-segment locks along the brow line, growing
    per `browFlow` (up at the inner end, drooping over the eye outside); shaded with strand striations
    across the flow, per-lock tone, dark roots, and a Kajiya-Kay sheen. **Lower parts**: goatee, tongue.
-3. **Hinge** (`headMap`): skull evaluated twice, upper rotated up `UP_ANG*mouth` (0.48) about `HINGE`, jaw
-   down `JAW_ANG*mouth` (0.2); each half cut by the hinge surface `y = HINGE.y − DROOP·x²` (downturned mouth,
-   open or closed), cut faces = mouth material. The palate and jaw floor form the cavity (it closes at the
-   hinge). At the corners the two halves smooth-union (`smin`, k = `CORNER_BLEND`·mouth, ramping in over
-   |x| 0.10–0.26): a rounded lens-shaped opening with fabric corners. Tongue sunk into the jaw floor, set
-   back. Mouth materials darken with depth toward the hinge.
-   Diagnostics: `GpuPuppet.debug_view` 1 = flat false color per material, 2 = depth (red = t − (F − 0.5)).
+3. **Hinge** (`headMap`): closed mouth = one unsplit skull. Open: attached parts move rigidly with their
+   half (upper rotated up `UP_ANG*mouth` 0.48, jaw down `JAW_ANG*mouth` 0.2 about `HINGE`), but the skull is
+   ONE warped field: a point takes the upper or lower rotation by which side of the downturned hinge line
+   `y = HINGE.y − DROOP·x²` it is on, and the rotation fades to 0 toward the sides near the hinge
+   (`smoothstep(0.04, 0.24, |x|)` × falloff over 0.28 in y), so only the mouth opens, as a tapered lens.
+   Cut faces (palate, jaw floor) = mouth material; they form the cavity. A step limiter (|hq| + 0.003, only
+   at/inside the skull) stops rays jumping the field discontinuity. Tongue sunk into the jaw floor.
+   Mouth materials darken with depth toward the hinge.
+   Diagnostics: `GpuPuppet.debug_view` 1 = false color per material, 2 = depth (red = t − (F − 0.5)),
+   3 = material id (red/16; hits only, use ss=1 so ids don't average).
 4. **Fleece shading** `shade`: sRGB→linear albedo × fiber noise; bumped normal; wrap diffuse key with soft
    shadow (28-step SDF march), hemispheric fill × AO; grazing sheen instead of specular. Only eyes, glasses,
    headphones and buttons get a highlight. Closed mouth = stitched line along the hinge, bent by `corners`.
@@ -136,8 +139,10 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Rule | What broke without it |
 |---|---|
 | Closed mouth line XOR open hinge, single threshold `MOUTH_OPEN` (Python zeroes `mouth` below it) | Two mouths at small openings |
-| Mouth corners must be closed (now by the corner blend; `holes` check) | Background visible through the corners of the open mouth when turned |
-| No filler in the mouth gap; corners closed by blending the lips (`CORNER_BLEND`); `mouth` check measures depth through the opening (0.212 vs 0.067 for the old pillow) | A sack bulged forward ("red pillow"); its offcut floated as a lump; flat web walls read as skin flaps |
+| Mouth corners must be closed (by the fading hinge; `holes` check) | Background visible through the corners of the open mouth when turned |
+| No filler in the mouth gap; corners closed by the hinge rotation fading out; `mouth` check measures depth through the opening (0.212 vs 0.067 for the old pillow) | A sack bulged forward ("red pillow"); its offcut floated as a lump; flat web walls read as skin flaps |
+| One warped skull, not two rotated halves unioned; rotation fully faded inside the outline (0.24 < jaw ~0.27); `outline` check (mouth ≥ 8 px from the near outline; screenshot version: 0) | Rigid split opened the sides: seam from mouth corner to outline + jaw notch; overlapping halves creased; a fade ending at 0.30 left a speck on the outline |
+| Closed mouth never splits the skull | Normal samples read the cut plane: thin line along the closed hinge |
 | March out of steps while still inside the bound = hit, not miss | Rays skimming the lip edge ran out of 160 steps → partial-alpha see-through specks in the open mouth |
 | Exposure: front-lit face ≈ albedo (key 0.88, fill 0.3); `felt` check counts clipped skin | Skin red channel clipped on 21k px: hot plastic look |
 | No specular on felt materials (`isFelt`) | Plastic look (owner's stated failure mode) |
