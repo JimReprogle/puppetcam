@@ -65,6 +65,41 @@ class Smooth:
         return self.v
 
 
+class Prof:
+    """--profile: wall time per pipeline stage; prints mean / p95 ms every `every` frames."""
+
+    def __init__(self, on, every=150):
+        self.on, self.every, self.t, self.frames, self.d = on, every, 0.0, 0, {}
+
+    def start(self):
+        if self.on:
+            self.t = self.t0 = time.perf_counter()
+
+    def lap(self, name):
+        if not self.on:
+            return
+        now = time.perf_counter()
+        self.d.setdefault(name, []).append((now - self.t) * 1000)
+        self.t = now
+
+    def end(self):
+        if not self.on:
+            return
+        self.d.setdefault("frame", []).append((time.perf_counter() - self.t0) * 1000)
+        self.frames += 1
+        if self.frames % self.every == 0:
+            self.report()
+
+    def report(self):
+        if not self.on or not self.d:
+            return
+        print(f"--- profile, last {len(self.d.get('frame', []))} frames (ms: mean / p95 / samples)")
+        for name, v in self.d.items():
+            a = np.array(v)
+            print(f"  {name:12s} {a.mean():7.2f} {np.percentile(a, 95):7.2f} {len(a):5d}")
+        self.d = {}
+
+
 # ---------------------------------------------------------------- fleece material (built once)
 
 def _strokes(rng, n, lmin, lmax, bright_frac):
@@ -970,6 +1005,7 @@ def main():
     ap.add_argument("--turn", type=float, default=1.0, help="head turn/nod gain")
     ap.add_argument("--blink", type=float, default=0.45, help="eyeBlink blendshape threshold")
     ap.add_argument("--preview", action="store_true")
+    ap.add_argument("--profile", action="store_true", help="print per-stage timings every 150 frames")
     here = os.path.dirname(os.path.abspath(__file__))
     ap.add_argument("--model", default=os.path.join(here, "face_landmarker.task"))
     ap.add_argument("--seg-model", default=os.path.join(here, "selfie_segmenter.tflite"))
@@ -1029,6 +1065,7 @@ def main():
     s_pose, s_expr = Smooth(0.5), Smooth(0.6)
     last, lost = None, 0
     calib, neutral = [], (0.0, 0.0)   # first ~1 s of frames = your neutral pose
+    prof = Prof(args.profile)
 
     with pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR) as vcam:
         print(f"virtual camera: {vcam.device}")
@@ -1037,13 +1074,16 @@ def main():
               "c recalibrate, q quit")
         try:
             while True:
+                prof.start()
                 ok, frame = cap.read()
                 if not ok:
                     break
+                prof.lap("read")
                 img = mp.Image(image_format=mp.ImageFormat.SRGB,
                                data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
                 ts = int((time.monotonic() - t0) * 1000)
                 res = landmarker.detect_for_video(img, ts)
+                prof.lap("landmark")
                 if grab_at is not None and time.monotonic() >= grab_at:
                     eraser.grab(frame)
                     grab_at = None
@@ -1057,6 +1097,7 @@ def main():
                             ys = [q.y * h for q in res.face_landmarks[0]]
                             box = (min(xs), min(ys), max(xs), max(ys))
                         frame = eraser.apply(frame, eraser.person_mask(conf, box))
+                    prof.lap("erase")
 
                 if res.face_landmarks:
                     bs = ({b.category_name: b.score for b in res.face_blendshapes[0]}
@@ -1074,6 +1115,7 @@ def main():
                     last, lost = (s_pose(pose), s_expr(expr)), 0
                 else:
                     lost += 1
+                prof.lap("measure")
                 if last is not None and lost < 15:
                     (cx, cy, fh, roll, yaw, pitch, nx, ny), (mo, lid, gx, gy, bu_, bd_, cn_) = last
                     st = {"mouth": float(mo), "lid": float(lid), "gaze": (float(gx), float(gy)),
@@ -1086,7 +1128,9 @@ def main():
                            round(st["gaze"][1] * 10), round(math.degrees(st["yaw"])), round(math.degrees(st["pitch"])),
                            round(st["brow"][0] * 10), round(st["brow"][1] * 10), round(st["corners"] * 10))
                     if key != head_key:
+                        prof.lap("head_key")
                         head_key, head_cache = key, draw_puppet(st, cfg, felt)
+                        prof.lap("draw_puppet")
                     canvas, alpha, nose_c = head_cache
                     M = head_matrix(cx, cy, fh, roll, args.scale, args.lift, nose_c, (nx, ny))
                     head_c = M @ np.array((ANCHOR[0] * S, ANCHOR[1] * S + PADT, 1.0))
@@ -1120,8 +1164,11 @@ def main():
                                   (int(head_c[0]), int(head_c[1])), int(0.17 * bu), int(0.15 * bu))
                         blit(frame, fc, fa, bx0, by0)                       # shirt front over the neck
                         cast_head_shadow(frame, alpha, M, fa, bx0, by0, fh * args.scale)
+                    prof.lap("body")
                     frame = composite(frame, canvas, alpha, M)
+                    prof.lap("composite")
                 vcam.send(frame)
+                prof.lap("send")
                 if args.preview:
                     cv2.imshow("puppetcam", frame)
                     key = cv2.waitKey(1) & 0xFF
@@ -1140,9 +1187,13 @@ def main():
                         args.lift += {ord("w"): .01, ord("s"): -.01}.get(key, 0)
                         args.scale += {ord("="): .05, ord("-"): -.05}.get(key, 0)
                         print(f"--lift {args.lift:.2f} --scale {args.scale:.2f}")
+                    prof.lap("preview")
                 vcam.sleep_until_next_frame()
+                prof.lap("sleep")
+                prof.end()
         except KeyboardInterrupt:
             pass
+        prof.report()
     landmarker.close()
     if segmenter is not None:
         segmenter.close()
