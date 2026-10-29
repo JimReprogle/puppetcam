@@ -27,6 +27,7 @@ var<private> g_shoulders: f32;
 var<private> g_closed: f32;     // 1 when the mouth is a closed line
 var<private> g_mustache: f32;
 var<private> g_fullbeard: f32;
+var<private> g_necktop: f32;    // body units above the collar
 
 const M_SKIN = 0.0;
 const M_HAIR = 1.0;
@@ -380,8 +381,9 @@ fn bodyMap(pw: vec3f) -> vec2f {
         let y = -0.26 - 0.15 * f32(i);
         r = U(r, vec2f(sdEllipsoid(p - vec3f(0.0, y, 0.392), vec3f(0.026, 0.026, 0.012)), M_BUTTON));
     }
-    // neck, rising out of the collar up under the head
-    r = U(r, vec2f(sdCylY(p - vec3f(0.0, 0.0, 0.03), 0.16, -0.4, 1.0) - 0.01, M_NECK));
+    // neck, rising out of the collar to just past the head centre (set from --neck): a fixed length
+    // stuck out above the head when the collar sat close under it
+    r = U(r, vec2f(sdCylY(p - vec3f(0.0, 0.0, 0.03), 0.16, -0.4, g_necktop) - 0.01, M_NECK));
     return r;
 }
 
@@ -579,6 +581,7 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     g_shoulders = P.v[7].x;
     g_mustache = P.v[9].x;
     g_fullbeard = P.v[10].x;
+    g_necktop = P.v[10].y;
     g_closed = P.v[7].y;
     let F = P.v[7].z;
     let fuzz = P.v[7].w;

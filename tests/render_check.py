@@ -11,6 +11,7 @@ Checks (each one exists because the bug it guards against actually shipped once)
   nose      - the CPU-projected nose point lands on the rendered nose (it pins the puppet to your face)
   felt      - no blown-out highlights on fabric: fleece is matte (the "plastic" failure)
   body      - torso interior is fully opaque
+  neck      - the neck ends just past the head centre for any --neck (it once stuck out above the head)
   erase     - after the camera moves, the plate re-aligns so the erased person leaves no ghost
               (a tilted monitor webcam once pasted a shifted room into the silhouette)
   style     - auto-style facial-hair and color decisions; command-line switches override them
@@ -34,6 +35,7 @@ import numpy as np
 
 import puppetcam as p
 import puppet_style
+import puppet_gpu as pg
 from puppet_gpu import GpuPuppet
 
 CFG = {"skin": p.SKIN["medium"], "hair": p.HAIR["salt"], "beard": p.HAIR["gray"], "beard_on": True,
@@ -132,11 +134,28 @@ def check_felt(r):
 def check_body(r):
     worst = 0
     for yaw in (-0.25, 0.0, 0.25):
-        c, a, ox, oy = r["g"].body(yaw, 1.25)
+        c, a, ox, oy = r["g"].body(yaw, 1.25, 0.45)
         solid = (a > 0.5).astype(np.uint8)
         core = cv2.erode(solid, np.ones((21, 21), np.uint8)) > 0
         worst = max(worst, int(((a < 0.95) & core).sum()))
     return worst == 0, f"max see-through pixels inside torso: {worst}"
+
+
+def check_neck(r):
+    """The neck must end just past the head centre for any --neck: a fixed-length neck (sized for the
+    0.45 default) stuck out above the head at --neck 0.2. Head top is ~0.34 head units above centre."""
+    bad = []
+    for neck in (0.2, 0.3, 0.45, 0.6):
+        size = 1.25
+        c, a, ox, oy = r["g"].body(0.0, size, neck)
+        unit_head = 0.55 * size                        # head units per body unit
+        col = a[:, ox - 5:ox + 5].max(1)
+        top = int(np.argmax(col > 0.5))                # first opaque row above the collar
+        above = (oy - top) / pg.BODY_UNIT * unit_head  # neck top above the collar, head units
+        centre = neck                                  # head centre above the collar, head units
+        if not (centre <= above <= centre + 0.15):
+            bad.append((neck, round(above - centre, 3)))
+    return not bad, f"neck top vs head centre (head units, want 0..0.15): {bad or 'ok'}"
 
 
 def check_erase(r):
@@ -240,7 +259,7 @@ def timing(r):
         r["g"].head(st)
     head = (time.perf_counter() - t) * 100
     t = time.perf_counter()
-    r["g"].body(0.1, 1.25)
+    r["g"].body(0.1, 1.25, 0.45)
     body = (time.perf_counter() - t) * 1000
     return True, f"GPU head: {head:.1f} ms, body: {body:.1f} ms"
 
@@ -256,7 +275,7 @@ def sheets(r, out):
     cv2.imwrite(os.path.join(out, "poses.png"), np.hstack(tiles))
     bodies = []
     for yaw in (-0.25, 0.0, 0.25):
-        c, a, _, _ = r["g"].body(yaw, 1.25)
+        c, a, _, _ = r["g"].body(yaw, 1.25, 0.45)
         bodies.append(cv2.resize(on_red(c, a), (400, int(400 * a.shape[0] / a.shape[1]))))
     cv2.imwrite(os.path.join(out, "body.png"), np.hstack(bodies))
 
@@ -269,7 +288,7 @@ def main():
          "bare": renderer(dict(CFG, headphones=False, glasses=False))}
     ok_all = True
     for name, fn in (("holes", check_holes), ("strays", check_strays), ("smooth", check_smooth),
-                     ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("erase", check_erase),
+                     ("nose", check_nose), ("felt", check_felt), ("body", check_body), ("neck", check_neck), ("erase", check_erase),
                      ("plate", check_plate_mismatch), ("style", check_style),
                      ("timing", timing)):
         ok, msg = fn(r)

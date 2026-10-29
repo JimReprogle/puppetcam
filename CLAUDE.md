@@ -141,7 +141,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | GPU device created on, and used only from, the render worker | (design rule: one thread owns the device) |
 | Downsample premultiplied uint8, unpremultiply only `0<a<1` | 11.6 ms float conversion per head render |
 | Body rigidly attached under head (`--body-follow 1`), neck length from 3D `fh`, clamp ±3 % | Stretchy neck when sitting up |
-| `--neck` default 0.45; neck cylinder reaches 1.0 body units, sprite top `BODY_TOP` 1.06 | Collar hidden behind the beard (head parked on the shoulders) |
+| `--neck` default 0.45 | Collar hidden behind the beard (head parked on the shoulders) |
+| Neck length follows `--neck`: top = head centre + `NECK_PAST_CENTRE` (0.08 head units), capped by `BODY_TOP`; body re-renders when `--neck` changes; `neck` check | Fixed 1.0-unit neck stuck out above the head at `--neck 0.2` |
 | Composite/shadow warps limited to ROI | 36 ms full-frame warps |
 | Plate re-aligned to the live view; always warp `plate0`, never the warped plate | Camera tilted after `b`: erased silhouette showed a shifted room = semi-transparent "ghost" of the person |
 | Adopt a new plate fit only on a real error improvement, not on "fit moved" | Static-camera fits scatter 1–7 px; swapping each in made the erased patch jiggle every second |
@@ -188,7 +189,7 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--lift` | 0.15 | fraction of face height |
 | `--body-size` | 1.25 | |
 | `--shoulders` | 0.80 | 0.5–1.2 |
-| `--neck` | 0.45 | collar below head center (the neck reaches up to ~0.6) |
+| `--neck` | 0.45 | collar below head center (0.2 tucks the head onto the collar; max ~0.62) |
 | `--body-follow` | 1.0 | 1 = rigid |
 | `--mouth-gain` | 2.2 | jawOpen multiplier |
 | `--brow-gain` | 1.8 | |

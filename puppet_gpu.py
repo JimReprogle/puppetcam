@@ -20,6 +20,7 @@ HINGE = np.array((0.0, -0.165, -0.06))
 UP_ANG = 0.48                         # must match puppet.wgsl
 NOSE = np.array((0.0, -0.025, 0.325))  # nose tip, head local
 BODY_UNIT = 300                       # body sprite px per body unit (main rescales)
+NECK_PAST_CENTRE = 0.08                # head units the neck reaches past the head centre (head top ~0.34)
 BODY_W, BODY_TOP, BODY_BOT = 3.2, 1.06, 2.5   # sprite: width, above / below the collar (units)
 
 
@@ -73,7 +74,7 @@ class GpuPuppet:
         v[7, 2:] = extra[:2]
         v[8] = extra[2:]
         v[9] = (1.0 if cfg["mustache"] else 0.0, *_lin(cfg["brow"]))
-        v[10, 0] = 1.0 if cfg["full_beard"] else 0.0
+        v[10, :2] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0))
         return v
 
     def set_cfg(self, cfg):
@@ -131,14 +132,18 @@ class GpuPuppet:
         bgr, a = self._unpremultiply(rgba, (S, self.out_h))
         return bgr, a, self.nose_point(st)
 
-    def body(self, yaw, body_size):
+    def body(self, yaw, body_size, neck):
+        """`neck` = --neck (collar below the head centre, head units); the neck ends just past the head
+        centre so the head hides its top whatever the collar distance."""
         u = BODY_UNIT
         w = int(math.ceil(BODY_W * u / 64.0)) * 64
         h = int((BODY_TOP + BODY_BOT) * u)
         ox, oy = w // 2, int(BODY_TOP * u)
         # camera distance in body units: same physical camera as the head (1 body unit = 0.55 * size head units)
-        f = F_HEAD / (0.55 * body_size)
-        st = {"yaw": yaw, "pitch": 0.0}
+        hu = 0.55 * body_size
+        f = F_HEAD / hu
+        neck_top = min((neck + NECK_PAST_CENTRE) / hu, BODY_TOP - 0.04)
+        st = {"yaw": yaw, "pitch": 0.0, "neck_top": neck_top}
         extra = (f, 0.012, u, ox, oy, 3.6)
         bgr, a = self._unpremultiply(self._draw(w, h, self._params(st, 1.0, extra)), (w, h))
         return bgr, a, ox, oy

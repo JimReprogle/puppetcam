@@ -741,15 +741,16 @@ def main():
                     # leaning in) but the neck is clamped to +/-12% so it can never stretch
                     if not args.no_body:
                         unit = 0.55 * fh * args.scale * args.body_size
-                        # torso turns a third as far as the head; re-rendered per 1.5 deg on the worker
-                        bkey = round(math.degrees(BODY_TURN * st["yaw"]) / 1.5)
+                        # torso turns a third as far as the head; re-rendered per 1.5 deg on the worker,
+                        # and when --neck changes (i/k keys) since the neck length follows it
+                        bkey = (round(math.degrees(BODY_TURN * st["yaw"]) / 1.5), round(args.neck, 2))
                         if body_job is not None and body_job[1].done():
                             body = {"key": body_job[0], "src": body_job[1].result(), "q": None,
                                     "pos": body["pos"] if body else None}
                             body_job = None
                         if body_job is None and (body is None or body["key"] != bkey):
-                            body_job = (bkey, renderer.submit(gpu.body, math.radians(bkey * 1.5),
-                                                              args.body_size))
+                            body_job = (bkey, renderer.submit(gpu.body, math.radians(bkey[0] * 1.5),
+                                                              args.body_size, args.neck))
                         if body is None:                      # very first body: wait for it
                             body = {"key": body_job[0], "src": body_job[1].result(), "q": None, "pos": None}
                             body_job = None
