@@ -38,7 +38,9 @@ def _rot_y(p, a):
 
 
 class GpuPuppet:
-    def __init__(self, cfg, S, padt, out_h, mouth_open, ss=2):
+    # ss 1.5: looks the same as 2x at output size, and its GPU load slows the person segmenter
+    # (sharing the GPU) far less: segmenter 24.5 ms at 2x vs 17.0 ms at 1.5x under contention
+    def __init__(self, cfg, S, padt, out_h, mouth_open, ss=1.5):
         self.cfg, self.S, self.padt, self.out_h, self.mouth_open, self.ss = cfg, S, padt, out_h, mouth_open, ss
         adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
         self.dev = adapter.request_device_sync()
@@ -116,7 +118,7 @@ class GpuPuppet:
 
     def head(self, st):
         ss, S = self.ss, self.S
-        w, h = S * ss, self.out_h * ss
+        w, h = int(S * ss), int(self.out_h * ss)      # w stays a multiple of 64 for readback rows
         fuzz = 0.007
         extra = (F_HEAD, fuzz, S * ss, 0.5 * w, (0.40 * S + self.padt) * ss, 0.78)
         rgba = self._draw(w, h, self._params(st, 0.0, extra))

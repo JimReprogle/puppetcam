@@ -10,7 +10,7 @@ puppet_gpu.py           # GpuPuppet: wgpu device, uniforms, render + readback, C
 puppet.wgsl             # the puppet: raymarched signed-distance shapes + fleece shading
 tests/render_check.py   # offline render regression harness (no camera needed; needs the GPU)
 face_landmarker.task    # auto-downloaded on first run
-selfie_segmenter.tflite # auto-downloaded on first run
+selfie_multiclass_256x256.tflite # person segmenter, auto-downloaded on first run (16 MB)
 empty_room.png          # created by pressing `b` in the preview
 ```
 
@@ -45,8 +45,11 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
    so benchmarks see every frame) → `mp.Image` (SRGB, contiguous); mediapipe timestamps = capture time.
 2. `FaceLandmarker.detect_for_video` with `output_face_blendshapes=True`.
 3. Empty-room capture timer (`b`, 5 s) runs before anything is drawn, so the plate is the raw frame.
-4. `Eraser.apply`: `ImageSegmenter` confidence mask → quarter-res mask → dilate/feather → replace person
-   pixels with `empty_room.png`, per-channel gain-matched to current exposure on clear background.
+4. `PersonSegmenter` (multiclass selfie model, MediaPipe GPU delegate, own thread, SRGBA input) is
+   submitted before face tracking and overlaps it; person = max of the 5 person classes. The frame waits
+   at most `SEG_WAIT` (10 ms) for its mask, else uses the previous one (job keeps running).
+   `Eraser.apply`: quarter-res mask → dilate/feather → replace person pixels with `empty_room.png`,
+   per-channel gain-matched to current exposure on clear background (person < 0.05).
    Mask polarity is auto-detected once against the face box.
    **Plate alignment**: about once a second, `Eraser.align` (own worker, ~90 ms) fits the as-captured
    `plate0` to the live view with ORB on clear background + RANSAC homography, and the fit is adopted
@@ -83,7 +86,7 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
 
 One full-screen fragment pass per render; `mode` uniform picks head (`headMap`) or torso (`bodyMap`).
 Render target rgba8 (premultiplied), read back, downsampled as uint8, then unpremultiplied on the fringe only.
-Head renders at 2× supersampling; body at 1× (`BODY_UNIT`=300 px/unit, main rescales).
+Head renders at 1.5× supersampling (same look as 2× at output size; 2× starved the GPU segmenter); body at 1× (`BODY_UNIT`=300 px/unit, main rescales).
 
 1. **Head shape** `headBase`: mix(ellipsoid, rounded box) by `--pez`, height by `--long`, wider at the jaw.
    `skull` smooth-unions brow ridge, cheeks, chin, nose; subtracts nostrils; raises the hair cap (`hairAmt`:
@@ -119,15 +122,19 @@ Head renders at 2× supersampling; body at 1× (`BODY_UNIT`=300 px/unit, main re
 | Plate re-aligned to the live view; always warp `plate0`, never the warped plate | Camera tilted after `b`: erased silhouette showed a shifted room = semi-transparent "ghost" of the person |
 | Adopt a new plate fit only on a real error improvement, not on "fit moved" | Static-camera fits scatter 1–7 px; swapping each in made the erased patch jiggle every second |
 | `use_aligned` refuses fits computed from a different `plate0` | A fit in flight during `b` would warp the old plate over the new one |
+| Multiclass segmenter, not `selfie_segmenter` | Head turned → single-class model dropped the torso (16 % coverage on one live frame, <80 % on 4 % of clip frames) → real shirt strips around the puppet |
+| Person = max of person classes, never 1 − background | 1 − background floors at 0.084 on empty room → zero "clear background" pixels → gain match and plate alignment silently stop |
+| Never block on the segmenter beyond `SEG_WAIT` | GPU contention with the puppet renders spiked waits to 26 ms (frame p95 50 ms) |
 
 Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 
 ## Performance
 
 - M2 Pro, 1280×720, erase on (`--profile`, 2026-10-29): frame **33.3 ms = 30 fps cap**, main-thread work
-  ≈ 20 ms: landmark 7.4, erase 8.6 (segmenter ≈ 3.5 of it), body 1.6–2.3, composite 0.7, send 0.5.
-  GPU head ≈ 22–24 ms (2× SS: ~20 ms draw+readback), body ≈ 15 ms, both on the worker.
-  Live camera: 33.2–33.4 ms/frame. Before the perf work: 80 ms/frame (13 fps) with the old 2-D renderer.
+  ≈ 23 ms: landmark 7.8, seg_wait 5.4–6.2 (p95 ~10), erase 5.1, body 2.3, composite 0.7, send 0.5.
+  Frame p95 37–39 ms; 9–12 % of frames use the previous mask. GPU head ≈ 18–20 ms (1.5× SS), body ≈ 15–19 ms.
+  The segmenter shares the GPU with the puppet: 10.7 ms alone, 17 ms with 1.5× head renders, 24.6 ms with 2×.
+  Before the perf work: 80 ms/frame (13 fps) with the old 2-D renderer.
 - Camera indices shift with what's attached; the OBS Virtual Camera has a number too. Never point
   `--cam` at it (feedback loop). Check with `system_profiler SPCameraDataType`.
 - Blends are uint8 `cv2.blendLinear` (no float32 frame copies); `cast_head_shadow` buffers are window-sized
@@ -158,7 +165,7 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--brow-gain` | 1.8 | |
 | `--turn` | 1.0 | yaw/pitch gain |
 | `--blink` | 0.45 | eyeBlink threshold |
-| `--plate`, `--model`, `--seg-model` | beside script | paths |
+| `--plate`, `--model`, `--seg-model` | beside script | paths; `--seg-model` defaults to the multiclass model (single-class models still work) |
 | `--cam`, `--width`, `--height`, `--fps` | 0, 1280, 720, 30 | |
 | `--video` | none | read a video file instead of the camera (benchmarks; not paced, every frame processed) |
 | `--profile` | off | per-stage mean/p95 ms every 150 frames and on exit |

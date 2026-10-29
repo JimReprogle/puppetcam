@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 
 import cv2
 import mediapipe as mp
@@ -35,6 +36,7 @@ OUT_H = S + PADT + PADB
 MAX_YAW, MAX_PITCH = math.radians(38), math.radians(25)
 MOUTH_OPEN = 0.06        # below this the mouth is a closed line, above it the head hinges
 BODY_TURN = 0.35        # torso yaw as a fraction of head yaw
+SEG_WAIT = 0.010        # s: longest the frame waits for its own person mask before using the last one
 
 # BGR felt colors
 SKIN = {"light": (150, 180, 225), "medium": (105, 150, 210),
@@ -150,7 +152,47 @@ def blit(frame, spr, alpha, x0, y0):
 # ---------------------------------------------------------------- erase the real person
 
 SEG_URL = ("https://storage.googleapis.com/mediapipe-models/image_segmenter/"
-           "selfie_segmenter/float16/latest/selfie_segmenter.tflite")
+           "selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite")
+
+
+class PersonSegmenter:
+    """Person confidence mask from MediaPipe's multiclass selfie model, on the GPU (Metal), on its own
+    thread so it overlaps face tracking (13.6 ms vs 124 ms on CPU).
+    Why multiclass: the single-class selfie model dropped the torso whenever the head turned (16 % torso
+    coverage vs 89 %), leaving the real shirt un-erased around the puppet.
+    Person = the strongest person class, not 1 - background: 1 - background floors at ~0.08 on an empty
+    room, so nothing would pass the < 0.05 clear-background test that gain matching and plate alignment
+    depend on. Single-class models (one mask) are used as-is."""
+
+    def __init__(self, path):
+        self.pool = ThreadPoolExecutor(1)               # MediaPipe's GPU context stays on this thread
+        self.seg = self.pool.submit(self._create, path).result()
+
+    @staticmethod
+    def _create(path):
+        return ImageSegmenter.create_from_options(ImageSegmenterOptions(
+            base_options=BaseOptions(model_asset_path=path, delegate=BaseOptions.Delegate.GPU),
+            running_mode=RunningMode.VIDEO, output_confidence_masks=True, output_category_mask=False))
+
+    def submit(self, frame, ts):
+        """Start segmenting `frame` (must not be modified until the result is taken)."""
+        return self.pool.submit(self._run, frame, ts)
+
+    def _run(self, frame, ts):
+        img = mp.Image(image_format=mp.ImageFormat.SRGBA,      # the GPU path takes 4-channel input only
+                       data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)))
+        masks = self.seg.segment_for_video(img, ts).confidence_masks
+        if not masks:
+            return None
+        views = [np.squeeze(m.numpy_view(), axis=-1) if m.numpy_view().ndim == 3 else m.numpy_view()
+                 for m in masks]
+        if len(views) == 1:
+            return views[0].copy()
+        return np.max(np.stack(views[1:]), axis=0)
+
+    def close(self):
+        self.pool.submit(self.seg.close).result()
+        self.pool.shutdown()
 
 
 class Eraser:
@@ -425,7 +467,7 @@ def main():
     ap.add_argument("--profile", action="store_true", help="print per-stage timings every 150 frames")
     here = os.path.dirname(os.path.abspath(__file__))
     ap.add_argument("--model", default=os.path.join(here, "face_landmarker.task"))
-    ap.add_argument("--seg-model", default=os.path.join(here, "selfie_segmenter.tflite"))
+    ap.add_argument("--seg-model", default=os.path.join(here, "selfie_multiclass_256x256.tflite"))
     ap.add_argument("--plate", default=os.path.join(here, "empty_room.png"),
                     help="saved empty-room background used to erase you")
 
@@ -465,9 +507,7 @@ def main():
         if not os.path.exists(args.seg_model):
             print(f"downloading segmentation model -> {args.seg_model}")
             urllib.request.urlretrieve(SEG_URL, args.seg_model)
-        segmenter = ImageSegmenter.create_from_options(ImageSegmenterOptions(
-            base_options=BaseOptions(model_asset_path=args.seg_model), running_mode=RunningMode.VIDEO,
-            output_confidence_masks=True, output_category_mask=False))
+        segmenter = PersonSegmenter(args.seg_model)
         eraser = Eraser(w, h, args.plate)
         if eraser.plate is None:
             print("to erase yourself: press b, step out of frame within 5 s, wait for the capture")
@@ -493,6 +533,7 @@ def main():
     # the camera can be bumped or tilted after the plate is captured; re-fit the plate about once a
     # second on its own worker (~90 ms) or the erased silhouette shows a shifted room (a "ghost")
     aligner, align_job, frame_i = ThreadPoolExecutor(1), None, 0
+    seg_job, seg_last = None, None
 
     with pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR) as vcam:
         print(f"virtual camera: {vcam.device}")
@@ -514,15 +555,28 @@ def main():
                 img = mp.Image(image_format=mp.ImageFormat.SRGB,
                                data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
                 ts = int((t_cap - t0) * 1000)
+                # person mask: segment this frame while we track the face, but never stall on it. It
+                # shares the GPU with the puppet renders and sometimes runs long; then this frame uses the
+                # previous mask (the 28 px dilation covers a frame of motion) and the job finishes later
+                erasing = segmenter is not None and eraser.plate is not None and grab_at is None
+                if seg_job is not None and seg_job.done():
+                    seg_last, seg_job = seg_job.result(), None
+                if erasing and seg_job is None:
+                    seg_job = segmenter.submit(frame.copy(), ts)     # copy: the frame is erased in place
                 res = landmarker.detect_for_video(img, ts)
                 prof.lap("landmark")
                 if grab_at is not None and time.monotonic() >= grab_at:
                     eraser.grab(frame)
                     grab_at = None
-                if segmenter is not None and eraser.plate is not None and grab_at is None:
-                    sr = segmenter.segment_for_video(img, ts)
-                    if sr.confidence_masks:
-                        conf = sr.confidence_masks[-1].numpy_view()
+                if erasing:
+                    if seg_job is not None:
+                        try:
+                            seg_last, seg_job = seg_job.result(timeout=SEG_WAIT), None
+                        except FutureTimeout:
+                            prof.lap("seg_late")
+                    conf = seg_last
+                    prof.lap("seg_wait")
+                    if conf is not None:
                         box = None
                         if res.face_landmarks:
                             xs = [q.x * w for q in res.face_landmarks[0]]
