@@ -36,7 +36,8 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 opencv-python numpy
 
 ## Per-frame pipeline (`main`)
 
-1. `cap.read()` → `mp.Image` (SRGB, contiguous).
+1. `Grabber` thread reads the camera and keeps only the newest frame (`--video` files are read in-line
+   so benchmarks see every frame) → `mp.Image` (SRGB, contiguous); mediapipe timestamps = capture time.
 2. `FaceLandmarker.detect_for_video` with `output_face_blendshapes=True`.
 3. Empty-room capture timer (`b`, 5 s) runs before anything is drawn, so the plate is the raw frame.
 4. `Eraser.apply`: `ImageSegmenter` confidence mask → quarter-res mask → dilate/feather → replace person
@@ -45,7 +46,10 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 opencv-python numpy
 5. `measure()` → pose `(cx, cy, fh, roll, yaw, pitch, nose_x, nose_y)` and expression
    `(mouth, lid, gaze_x, gaze_y, brow_up, brow_down, corners)`; both EMA-smoothed (`Smooth`).
    First 30 detections = neutral yaw/pitch calibration (`c` to redo).
-6. Head cache: state quantized into `head_key`; `draw_puppet` re-runs only when the key changes.
+6. Head cache: `head_key` is a continuous state vector in step units (1°, 0.05 mouth/lid, 0.1 gaze/brow/
+   corners); `draw_puppet` re-runs only when any value moves ≥1 step from the last render (deadband, not
+   rounding: rounding re-rendered 75–83 % of frames on jitter). Renders run on a `ThreadPoolExecutor(1)`;
+   the loop keeps compositing the previous head until the new one lands (first head is awaited).
 7. `head_matrix()` → affine M (scale `fh*scale/S`, roll, lift, then horizontal nose alignment).
 8. Body: back layer (`bc`) → `draw_neck` → front layer (`fc`) → `cast_head_shadow`.
 9. `composite()` warps/blends the head canvas inside its ROI only (`warp_roi`).
@@ -106,12 +110,13 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 
 ## Performance
 
-- `draw_puppet` ≈ 120–145 ms/frame on the (slow) sandbox CPU; not yet profiled on Apple Silicon.
-  The head cache hides it when the face is still. Hot spots: `sculpt_light`, strand loops (Python),
-  full-canvas float blends, `composite_cups` distance transform.
-- Next wins, in order: run strand drawing and `hf` at lower res; cache static layers (hair cap/strands)
-  per yaw bucket; move per-pixel blends to `cv2.addWeighted`/uint8; render on a worker thread so camera
-  capture and `vcam.send` never block.
+- Apple Silicon, 1280×720, erase on (`--profile` on the recorded clip, 2026-10-29): frame **33.3 ms = 30 fps cap**,
+  main-thread work ≈ 21 ms: landmark 7.1, erase 8.4 (segmenter ≈ 3.5 of it), body 4.0, composite 0.7, send 0.5.
+  `draw_puppet` ≈ 47 ms on the render thread, ~25–35 % of frames. Before this work: 80 ms/frame (13 fps).
+- Blends are uint8 `cv2.blendLinear` (no float32 frame copies); `cast_head_shadow` buffers are window-sized
+  and its wide blur runs at 1/4 res. Keep new per-frame work in that style.
+- Benchmark: `python puppetcam.py --video clip.mp4 --profile --plate <png>` (a GIL build; a render process
+  measured the same as the thread). Next wins: segmenter at lower input res; strands/`hf` at lower res.
 - Owner priority: **speed over features** (hand/arm tracking was evaluated and declined for this reason).
 
 ## CLI
@@ -137,12 +142,15 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--blink` | 0.45 | eyeBlink threshold |
 | `--plate`, `--model`, `--seg-model` | beside script | paths |
 | `--cam`, `--width`, `--height`, `--fps` | 0, 1280, 720, 30 | |
+| `--video` | none | read a video file instead of the camera (benchmarks; not paced, every frame processed) |
+| `--profile` | off | per-stage mean/p95 ms every 150 frames and on exit |
 | `--preview` | off | keys: `w/s` lift, `=/-` scale, `i/k` neck, `b` plate, `c` calibrate, `q` quit |
 
 ## Backlog
 
 - Roll gain / roll lock option (owner flagged head tilt as possibly exaggerated).
-- Profile on Apple Silicon; threaded capture/render/send pipeline.
+- Live-camera run of the threaded pipeline (verified only on a clip-fed `Grabber` + reading the OBS output;
+  no camera was attached at the time).
 - First real run on Windows (camera index, OBS registration).
 - `plaid-gray` should either become a real plaid texture or be renamed.
 - Arms/hands via PoseLandmarker/HandLandmarker exist in mediapipe 1.2.0 — deferred for speed.

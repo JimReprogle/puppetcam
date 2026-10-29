@@ -10,8 +10,10 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import mediapipe as mp
@@ -984,6 +986,37 @@ def composite(frame, canvas, alpha, M):
     return frame
 
 
+# ---------------------------------------------------------------- background workers
+
+class Grabber(threading.Thread):
+    """Reads the camera continuously and keeps only the newest frame, so the main loop never
+    blocks on the device and never processes a stale, buffered frame."""
+
+    def __init__(self, cap):
+        super().__init__(daemon=True)
+        self.cap, self.cond = cap, threading.Condition()
+        self.ok, self.frame, self.t, self.seq, self.stopped = True, None, 0.0, 0, False
+
+    def run(self):
+        while not self.stopped:
+            ok, frame = self.cap.read()
+            with self.cond:
+                self.ok, self.frame, self.t, self.seq = ok, frame, time.monotonic(), self.seq + 1
+                self.cond.notify_all()
+            if not ok:
+                return
+
+    def next(self, seq):
+        """Block until a frame newer than `seq` exists; returns (seq, ok, frame, capture_time)."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq != seq)
+            return self.seq, self.ok, self.frame, self.t
+
+    def stop(self):
+        self.stopped = True
+        self.join(timeout=2.0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cam", type=int, default=0)
@@ -1079,6 +1112,15 @@ def main():
     last, lost = None, 0
     calib, neutral = [], (0.0, 0.0)   # first ~1 s of frames = your neutral pose
     prof = Prof(args.profile)
+    # camera frames come from a reader thread (newest frame wins); a --video file is read in-line
+    # so benchmarks process every frame
+    grabber, seq = None, 0
+    if not args.video:
+        grabber = Grabber(cap)
+        grabber.start()
+    # draw_puppet on a worker thread: cv2/numpy release the GIL, and it only reads st/cfg/felt.
+    # A worker process measured the same (33.3 ms/frame) with more machinery
+    renderer, pending = ThreadPoolExecutor(1), None
 
     with pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR) as vcam:
         print(f"virtual camera: {vcam.device}")
@@ -1088,13 +1130,17 @@ def main():
         try:
             while True:
                 prof.start()
-                ok, frame = cap.read()
+                if grabber is not None:
+                    seq, ok, frame, t_cap = grabber.next(seq)
+                else:
+                    ok, frame = cap.read()
+                    t_cap = time.monotonic()
                 if not ok:
                     break
                 prof.lap("read")
                 img = mp.Image(image_format=mp.ImageFormat.SRGB,
                                data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-                ts = int((time.monotonic() - t0) * 1000)
+                ts = int((t_cap - t0) * 1000)
                 res = landmarker.detect_for_video(img, ts)
                 prof.lap("landmark")
                 if grab_at is not None and time.monotonic() >= grab_at:
@@ -1141,10 +1187,14 @@ def main():
                     key = np.array((st["mouth"] * 20, st["lid"] * 20, st["gaze"][0] * 10, st["gaze"][1] * 10,
                                     math.degrees(st["yaw"]), math.degrees(st["pitch"]),
                                     st["brow"][0] * 10, st["brow"][1] * 10, st["corners"] * 10))
-                    if head_key is None or np.max(np.abs(key - head_key)) >= 1.0:
-                        prof.lap("head_key")
-                        head_key, head_cache = key, draw_puppet(st, cfg, felt)
-                        prof.lap("draw_puppet")
+                    # the head renders on the worker; until a new one lands, reuse the last one
+                    if pending is not None and pending.done():
+                        head_cache, pending = pending.result(), None
+                    if pending is None and (head_key is None or np.max(np.abs(key - head_key)) >= 1.0):
+                        head_key, pending = key, renderer.submit(draw_puppet, st, cfg, felt)
+                        prof.lap("submit")
+                    if head_cache is None:                    # very first head: wait for it
+                        head_cache, pending = pending.result(), None
                     canvas, alpha, nose_c = head_cache
                     M = head_matrix(cx, cy, fh, roll, args.scale, args.lift, nose_c, (nx, ny))
                     head_c = M @ np.array((ANCHOR[0] * S, ANCHOR[1] * S + PADT, 1.0))
@@ -1207,6 +1257,10 @@ def main():
                 prof.end()
         except KeyboardInterrupt:
             pass
+        finally:
+            if grabber is not None:
+                grabber.stop()
+            renderer.shutdown(cancel_futures=True)
         prof.report()
     landmarker.close()
     if segmenter is not None:
