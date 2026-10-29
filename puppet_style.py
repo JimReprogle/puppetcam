@@ -33,7 +33,6 @@ REGIONS = {
     "forehead": [109, 10, 338, 297, 299, 9, 69, 67],
 }
 HAIR_CLASS = 1                 # selfie_multiclass_256x256: 0 bg, 1 hair, 2 body-skin, 3 face-skin, 4 clothes, 5 other
-CLOTHES_CLASS = 4
 DESAT = 0.5                    # a pixel is "hair-like" below this fraction of the skin's chroma
 MUSTACHE_MIN, GOATEE_MIN, FULL_BEARD_MIN = 0.2, 0.25, 0.45
 MIN_PIXELS = 30
@@ -122,9 +121,15 @@ def sample(frame, lm, classes):
         head_px = cv2.erode((classes == HAIR_CLASS).astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
         if head_px.sum() >= MIN_PIXELS:
             head_color = [float(np.median(light[head_px])), float(np.median(chroma[head_px]))]
-        # below the chin a dark, desaturated shirt passes as "hair-like"; the segmenter knows clothes
-        beard_m &= (classes != CLOTHES_CLASS) & (classes != 0)
-    return dict(fr, skin=[skin_l, skin_c], hair=head_color, beard=color(beard_m & hairy),
+        beard_m &= classes != 0
+    # beard: no clothes-class filter (the segmenter labels a goatee "clothes": 982 of 1490 goatee pixels
+    # on the owner's frame, so the filter left only neck shadow and called a gray goatee "black"). The
+    # 90th lightness percentile picks lit strands; a dark shirt behind the goatee can't reach it
+    beard_px = beard_m & hairy
+    beard = None
+    if beard_px.sum() >= MIN_PIXELS:
+        beard = [float(np.percentile(light[beard_px], 90)), float(np.median(chroma[beard_px]))]
+    return dict(fr, skin=[skin_l, skin_c], hair=head_color, beard=beard,
                 brow=color((m["brow_l"] | m["brow_r"]) & hairy))
 
 

@@ -87,7 +87,7 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
   (shaved 0.02, mustache 0.33+), goatee 0.25 (0.39+), full beard 0.45 on the min of both jaw sides (0.12–0.21).
 - Colors relative to the subject's skin lightness (exposure cancels) → felt names (`hair_name` tiers). Head hair
   = eroded hair-class median; beard = lit strands (p75) in detected regions only, minus clothes/background
-  (a dark shirt passes as "hair"); goatee color also sampled below the chin (it hangs off the mesh).
+  (beard color: lit strands, p90, no clothes filter: the segmenter labels a goatee "clothes"); goatee color also sampled below the chin (it hangs off the mesh).
 - Not detected on purpose: skin tone (lighting swings it), head-hair coverage (owner chose the widow's peak).
 - Saved to `puppet_style.json` (gitignored); later starts load it. Precedence in `look()`: defaults ← style ←
   explicit switches. No frontal frames → current look kept, hint printed. Owner's camera sits ~30° off-axis:
