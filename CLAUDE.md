@@ -92,7 +92,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 
 1. **Head shape** `headBase`: mix(ellipsoid, rounded box) by `--pez`, height by `--long`, wider at the jaw.
    `skull` smooth-unions brow ridge, cheeks, chin, jowls (sagging beside the chin), nose; subtracts
-   nostrils; raises the hair cap (`hairAmt`: full head of hair, front hairline at the forehead top).
+   nostrils; raises the hair cap (`hairAmt`: full head of hair, front hairline at the forehead top rising over the temples, with a
+   widow's peak: a 0.07-deep triangular dip, 0.075 half-width, at the centre).
 2. **Upper parts** (ride the upper head, never cut): ping-pong eyes, felt lid shells (edge height from
    `lid`), brows, mustache, glasses (rings, bridge, temples), headphones (band, sliders, cups, pads).
    **Brows are hair, not fleece**: `BROW_LOCKS`=24 tapered two-segment locks along the brow line, growing

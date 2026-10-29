@@ -147,10 +147,11 @@ fn headBase(q: vec3f) -> f32 {
 }
 
 fn hairAmt(q: vec3f) -> f32 {
-    // full head of hair: sides and back down to the nape, front hairline where the forehead turns
-    // into the crown, with only slight recession at the temples
+    // full head of hair: sides and back down to the nape; the front hairline sits at the forehead top,
+    // rises slightly over the temples and dips to a widow's peak in the middle
     let front = smoothstep(-0.02, 0.17, q.z);
-    let hl = mix(-0.14, 0.245 - 1.1 * q.x * q.x, front);
+    let peak = 0.07 * max(0.0, 1.0 - abs(q.x) / 0.075);
+    let hl = mix(-0.14, 0.255 + 0.5 * q.x * q.x - peak, front);
     return smoothstep(-0.008, 0.008, q.y - hl);
 }
 
