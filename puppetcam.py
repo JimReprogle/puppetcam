@@ -690,6 +690,7 @@ def main():
             print("to erase yourself: press b, step out of frame within 5 s, wait for the capture")
     grab_at = None
     t0 = time.monotonic()
+    last_ts = -1           # mediapipe VIDEO mode needs strictly increasing ms; frames can share an int ms
 
     body = None            # felt body sprite + cached rescale + current position
     head_key, head_cache = None, None
@@ -737,6 +738,11 @@ def main():
                 img = mp.Image(image_format=mp.ImageFormat.SRGB,
                                data=np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
                 ts = int((t_cap - t0) * 1000)
+                if ts <= last_ts:
+                    # two distinct frames rounded to the same ms (bursty camera delivery);
+                    # bump so both the segmenter and landmarker still see a strictly rising ts
+                    ts = last_ts + 1
+                last_ts = ts
                 # person mask: segment this frame while we track the face, but never stall on it. It
                 # shares the GPU with the puppet renders and sometimes runs long; then this frame uses the
                 # previous mask (the 28 px dilation covers a frame of motion) and the job finishes later
