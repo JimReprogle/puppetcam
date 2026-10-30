@@ -197,7 +197,8 @@ class PersonSegmenter:
     gpu (macOS): the multiclass selfie model on MediaPipe's GPU delegate, every frame (13.6 ms vs 124 ms
       on CPU). Why multiclass: the single-class selfie model dropped the torso whenever the head turned
       (16 % torso coverage vs 89 %), leaving the real shirt un-erased around the puppet.
-    hybrid (Windows: its MediaPipe build has GPU processing disabled): the fast single-class model on the
+    hybrid (Windows and Linux, where the GPU delegate is not usable: Windows disables it in its build and
+      Linux wheels fail at EGL display creation off a desktop session): the fast single-class model on the
       CPU every frame (~4 ms) for the head and moving edges, max'ed with the multiclass mask refreshed
       on a second CPU thread whenever it's free (~124 ms) for the torso, which barely moves. The union
       only ever erases extra, and extra erasing is invisible (the room photo matches the room there).
@@ -210,7 +211,9 @@ class PersonSegmenter:
         self.pool = ThreadPoolExecutor(1)               # MediaPipe's GPU context stays on this thread
         self.mode = mode
         if mode == "auto":
-            self.mode = "hybrid" if sys.platform == "win32" else "gpu"
+            # GPU segmentation is the macOS path; Windows' MediaPipe build has it disabled and the Linux
+            # wheel's GPU delegate fails at EGL display creation off a desktop session, so both use hybrid
+            self.mode = "gpu" if sys.platform == "darwin" else "hybrid"
         if self.mode == "gpu":
             try:
                 self.seg = self.pool.submit(self._create, path, BaseOptions.Delegate.GPU).result()
@@ -620,7 +623,8 @@ def main():
     ap.add_argument("--fast-seg-model", default=os.path.join(here, "selfie_segmenter.tflite"),
                     help="fast single-class model used every frame in hybrid mode")
     ap.add_argument("--seg-mode", choices=("auto", "gpu", "hybrid"), default="auto",
-                    help="person segmentation: gpu (macOS), hybrid CPU (Windows); auto picks per platform")
+                    help="person segmentation: gpu (macOS), hybrid CPU (Windows/Linux); auto picks per "
+                         "platform. Force --seg-mode gpu on a Linux desktop with a working EGL/GPU context")
     ap.add_argument("--list-cams", action="store_true", help="list camera indices that open, then exit")
     ap.add_argument("--plate", default=os.path.join(here, "empty_room.png"),
                     help="saved empty-room background used to erase you")
@@ -651,7 +655,8 @@ def main():
         cfg.update(female=True, long_hair=True, lashes=True, lips=True, bust=not args.no_body,
                    headphones=False, beard_on=False, mustache=False, full_beard=False)
 
-    backend ={"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
+    backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION,
+               "linux": cv2.CAP_V4L2}.get(sys.platform, cv2.CAP_ANY)
     if args.list_cams:
         # OpenCV can't read device names; the OBS Virtual Camera is one of these indices too (never use it)
         for i in range(8):
@@ -687,8 +692,8 @@ def main():
             print(f"downloading segmentation model -> {args.seg_model}")
             urllib.request.urlretrieve(SEG_URL, args.seg_model)
         mode = args.seg_mode
-        if mode == "auto" and sys.platform == "win32":
-            mode = "hybrid"
+        if mode == "auto" and sys.platform != "darwin":
+            mode = "hybrid"          # gpu only on macOS; Windows and Linux use CPU hybrid (see PersonSegmenter)
         if mode != "gpu" and not os.path.exists(args.fast_seg_model):
             print(f"downloading fast segmentation model -> {args.fast_seg_model}")
             urllib.request.urlretrieve(FAST_SEG_URL, args.fast_seg_model)
@@ -727,7 +732,15 @@ def main():
     if not args.no_auto_style and segmenter is None:
         print("auto-style needs the segmenter (it is off with --no-erase)")
 
-    with pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR) as vcam:
+    try:
+        vcam_cm = pyvirtualcam.Camera(width=w, height=h, fps=args.fps, fmt=pyvirtualcam.PixelFormat.BGR)
+    except RuntimeError as ex:
+        if sys.platform.startswith("linux"):
+            sys.exit(f"virtual camera unavailable ({ex}). Load the v4l2loopback module first:\n"
+                     "  sudo apt install v4l2loopback-dkms      # or your distro's equivalent\n"
+                     "  sudo modprobe v4l2loopback devices=1 card_label=puppetcam exclusive_caps=1")
+        raise
+    with vcam_cm as vcam:
         print(f"virtual camera: {vcam.device}")
         print("look straight at the camera for 1 s to calibrate")
         print("preview keys: b capture empty room (5 s timer), w/s lift, =/- scale, i/k body up/down, "

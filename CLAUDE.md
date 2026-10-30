@@ -34,7 +34,7 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
 
 - Python 3.14 recommended. `pyvirtualcam` 0.15.0 wheels cover CPython 3.9–3.14 on macOS and Windows x64 only.
   On 3.15 it must be built from source (`git clone --recursive --branch v0.15.0 https://github.com/letmaik/pyvirtualcam`).
-- `mediapipe` 1.2.0 wheels: macOS arm64, Windows x64/arm64. No Intel Mac.
+- `mediapipe` 1.2.0 wheels: macOS arm64, Windows x64/arm64, Linux x86_64 (manylinux). No Intel Mac.
 - **Do not use `mp.solutions`** — removed in mediapipe ≥0.10.30. The code uses the Tasks API
   (`FaceLandmarker`, `ImageSegmenter`) with `RunningMode.VIDEO` and monotonic ms timestamps.
 - OBS must be installed (provides the camera extension/driver); the OBS app need not run, and its own
@@ -43,6 +43,12 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
   option) but NOT yet executed on Windows: all deps have win_amd64 wheels (cp313/cp314); wgpu runs on
   DX12/Vulkan; capture uses CAP_DSHOW. The Windows mediapipe 1.2.0 build has GPU disabled (its DLL contains
   "GPU processing is disabled in build flags"; the macOS dylib has Metal code instead), hence `--seg-mode hybrid`.
+- Linux x86_64 support written 2026-10-30, NOT yet executed on Linux: deps have manylinux wheels; wgpu runs
+  on Vulkan; capture uses CAP_V4L2; vcam needs the v4l2loopback kernel module (`modprobe v4l2loopback`), and
+  `main` catches the pyvirtualcam open error on Linux and prints that modprobe hint. `--seg-mode auto` is
+  `gpu` only on `sys.platform == "darwin"`; Windows AND Linux default to `hybrid` because the Linux wheel's
+  GPU delegate fails at EGL display creation off a desktop session (MediaPipe issue #5503). A Linux desktop
+  with working EGL can force `--seg-mode gpu`. All platform logic keys on `sys.platform` (darwin/win32/linux).
 
 ## Per-frame pipeline (`main`)
 
@@ -219,7 +225,7 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--blink` | 0.45 | eyeBlink threshold |
 | `--plate`, `--model`, `--seg-model` | beside script | paths; `--seg-model` defaults to the multiclass model (single-class models still work) |
 | `--cam`, `--width`, `--height`, `--fps` | 0, 1280, 720, 30 | |
-| `--seg-mode` auto/gpu/hybrid, `--fast-seg-model` | auto | hybrid = Windows CPU segmentation |
+| `--seg-mode` auto/gpu/hybrid, `--fast-seg-model` | auto | hybrid = Windows/Linux CPU segmentation; auto = gpu on macOS only |
 | `--list-cams` | off | probe indices 0–7 and exit (cross-platform; no device names) |
 | `--video` | none | read a video file instead of the camera (benchmarks; not paced, every frame processed) |
 | `--profile` | off | per-stage mean/p95 ms every 150 frames and on exit |
