@@ -153,6 +153,7 @@ silently set to the nearest limit.
 
 | Switch | Default | Values | Description |
 |---|---|---|---|
+| `--female` | off | flag | Feminine puppet preset: long face-framing hair, eyelashes, lips, and a bust, plus a narrower jaw and finer brows. Turns off facial hair and the headphones (the cups clip the hair curtains). Every underlying switch (`--hair`, `--shirt`, `--hairline`, …) still applies alongside it. |
 | `--skin` | `medium` | `light`, `medium`, `tan`, `deep` | Felt skin colour. Not auto-detected, because lighting changes it too much. |
 | `--hair` | auto, else `salt` | `gray`, `salt`, `white`, `brown`, `black` | Head-hair colour. |
 | `--beard` | auto, else `gray` | same as `--hair` | Beard and mustache colour. |

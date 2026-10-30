@@ -22,6 +22,7 @@ SMILE_LIFT_CUT = 0.45                 # must match puppet.wgsl
 NOSE = np.array((0.0, -0.025, 0.325))  # nose tip, head local
 BODY_UNIT = 300                       # body sprite px per body unit (main rescales)
 HAIRLINES = ("widow", "straight", "receding", "bald")   # --hairline; index order matches puppet.wgsl
+LIP = (90, 75, 160)                   # default lip felt (BGR): muted berry rose
 NECK_PAST_CENTRE = 0.08               # head units the neck reaches past the head centre (head top ~0.34)
 BODY_W, BODY_TOP, BODY_BOT = 3.2, 1.06, 2.5   # sprite: width, above / below the collar (units)
 
@@ -49,7 +50,7 @@ class GpuPuppet:
         self.dev = adapter.request_device_sync()
         with open(SHADER) as f:
             mod = self.dev.create_shader_module(code=f.read())
-        self.ubuf = self.dev.create_buffer(size=16 * 12, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
+        self.ubuf = self.dev.create_buffer(size=16 * 14, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
         self.pipe = self.dev.create_render_pipeline(
             layout="auto",
             vertex={"module": mod, "entry_point": "vs"},
@@ -65,7 +66,7 @@ class GpuPuppet:
         cfg = self.cfg
         mouth = st.get("mouth", 0.0)
         closed = mouth < self.mouth_open
-        v = np.zeros((12, 4), np.float32)
+        v = np.zeros((14, 4), np.float32)
         v[0] = (st["yaw"], st["pitch"], 0.0 if closed else mouth, st.get("lid", 0.35))
         v[1] = (*st.get("gaze", (0.0, 0.0)), *st.get("brow", (0.0, 0.0)))
         v[2] = (st.get("corners", 0.0), cfg["pez"], cfg["long"], mode)
@@ -80,6 +81,10 @@ class GpuPuppet:
         v[10] = (1.0 if cfg["full_beard"] else 0.0, st.get("neck_top", 0.0), HAIRLINES.index(cfg["hairline"]),
                  cfg["forehead"])
         v[11, 0] = float(self.debug_view)
+        # female option (all default off, so the existing male puppet is unchanged)
+        v[12] = (1.0 if cfg.get("female") else 0.0, 1.0 if cfg.get("long_hair") else 0.0,
+                 1.0 if cfg.get("lashes") else 0.0, 1.0 if cfg.get("lips") else 0.0)
+        v[13] = (*_lin(cfg.get("lip", LIP)), 1.0 if cfg.get("bust") else 0.0)
         return v
 
     def set_cfg(self, cfg):
