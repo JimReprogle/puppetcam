@@ -20,6 +20,8 @@ Checks (each one exists because the bug it guards against actually shipped once)
   outline   - turned, open mouth: the mouth ends inside the cheek (the hinge once split the sides)
   smile     - smiling turns the mouth up (open or closed), frowning turns it down
   mouth     - the open mouth is a cavity: depth through the opening well behind the lips (a sack read as a red pillow)
+  female    - --female adds its four markers (long hair, lashes, lips, bust) and they vanish when switched off
+  female_mouth - with lips on, the open mouth is still a cavity (the raised lips must not fill the gap)
   timing    - GPU head/body render cost (report only)
 """
 import argparse
@@ -47,6 +49,11 @@ CFG = {"skin": p.SKIN["medium"], "hair": p.HAIR["salt"], "beard": p.HAIR["gray"]
        "glasses": True, "long": 1.0, "shirt": p.SHIRT["blue"], "pez": 1.0, "shoulders": 0.8,
        "headphones": True, "mustache": False, "full_beard": False, "brow": p.HAIR["gray"],
        "hairline": "widow", "forehead": 0.0}
+
+# the --female preset: long face-framing hair, eyelashes, lips, bust; no facial hair / headphones
+FEM = dict(CFG, headphones=False, glasses=False, hairline="straight", beard_on=False,
+           hair=p.HAIR["brown"], brow=p.HAIR["brown"], shirt=p.SHIRT["red"], pez=0.3,
+           female=True, long_hair=True, lashes=True, lips=True, bust=True)
 
 
 def state(mouth=0.0, yaw=0.0, pitch=0.0, brow=(0.0, 0.0), corners=0.0, lid=0.35):
@@ -314,6 +321,67 @@ def check_smile(r):
     return ok, f"open-mouth centreline ends below centre, px: frown {k[-1.0]:.0f} / neutral {k[0.0]:.0f} / smile {k[1.0]:.0f} (smile < 0)"
 
 
+M_HAIR, M_LIP, M_LASH = 1, 13, 15        # puppet.wgsl material ids
+
+
+def check_female(r):
+    """--female must add the four markers and nothing when they're off: long hair framing the lower face
+    (M_HAIR pixels below the jaw), eyelashes (M_LASH), lips (M_LIP), and a bust that reshapes the torso."""
+    on = GpuPuppet(FEM, p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN, ss=1)
+    off = GpuPuppet(dict(FEM, long_hair=False, lashes=False, lips=False), p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN, ss=1)
+
+    def idmap(g, st):
+        g.debug_view = 3
+        c, a, _ = g.head(st)
+        g.debug_view = 0
+        return np.rint(c[..., 2].astype(np.float32) / 16).astype(int), a > 0.999
+
+    ion, hon = idmap(on, state())
+    ioff, hoff = idmap(off, state())
+    lower = slice(int(p.OUT_H * 0.58), p.OUT_H)                 # below the jaw: where curtains hang
+    hair_on = int(((ion[lower] == M_HAIR) & hon[lower]).sum())
+    hair_off = int(((ioff[lower] == M_HAIR) & hoff[lower]).sum())
+    # the silhouette halo ignores the debug view and keeps its felt color, so a few off-render pixels
+    # alias to any id; require the feature to dominate its off count, not to be literally absent
+    lash, lash0 = int(((ion == M_LASH) & hon).sum()), int(((ioff == M_LASH) & hoff).sum())
+    lip, lip0 = int(((ion == M_LIP) & hon).sum()), int(((ioff == M_LIP) & hoff).sum())
+    bad = []
+    if hair_on < hair_off + 4000:
+        bad.append(("long hair", hair_on, hair_off))
+    if lash < 40 or lash < 5 * lash0:
+        bad.append(("lashes", lash, lash0))
+    if lip < 500 or lip < 4 * lip0:
+        bad.append(("lips", lip, lip0))
+    # bust reshapes the chest: the torso render must differ there with it on vs off
+    gb_off = GpuPuppet(dict(FEM, bust=False), p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN)
+    c1, a1, ox, oy = on.body(0.0, 1.25, 0.45)
+    c0, a0, _, _ = gb_off.body(0.0, 1.25, 0.45)
+    u = pg.BODY_UNIT
+    roi = (slice(oy + int(0.55 * u), oy + int(1.1 * u)), slice(ox - u // 2, ox + u // 2))
+    chest = float(np.abs(on_red(c1, a1)[roi].astype(int) - on_red(c0, a0)[roi].astype(int)).mean())
+    if chest < 2.0:
+        bad.append(("bust", round(chest, 2)))
+    return not bad, f"female markers wrong: {len(bad)} {bad[:2]} (hair {hair_on}/{hair_off}, lash {lash}, lip {lip}, bust {chest:.1f})"
+
+
+def check_female_mouth(r):
+    """The lips must not fill the open mouth: with --female the cavity is still a cavity (depth through the
+    opening well behind the raised lips), the same invariant check_mouth makes for the male puppet."""
+    g = GpuPuppet(FEM, p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN)
+    worst = 9.0
+    for yaw, pitch in ((0, 0), (20, -15), (-20, 10)):
+        st = state(0.9, yaw, pitch)
+        c, a, n = g.head(st)
+        g.debug_view = 2
+        d, _, _ = g.head(st)
+        g.debug_view = 0
+        depth = (pg.F_HEAD - 0.5) + d[..., 2].astype(np.float32) / 255.0
+        x = int(round(n[0]))
+        col = depth[int(n[1]) + 20: int(n[1]) + 200, x - 2: x + 3].mean(1)
+        worst = min(worst, float(col.max() - np.percentile(col, 10)))
+    return worst > 0.08, f"female open-mouth cavity depth (lips on): {worst:.3f} (> 0.08)"
+
+
 def check_roll(r):
     """The torso tilts the same way as the head and keeps its collar point pinned (the neck base)."""
     w, h, ox, oy = 400, 300, 200, 100
@@ -391,6 +459,12 @@ def sheets(r, out):
         c, a, _, _ = r["g"].body(yaw, 1.25, 0.45)
         bodies.append(cv2.resize(on_red(c, a), (400, int(400 * a.shape[0] / a.shape[1]))))
     cv2.imwrite(os.path.join(out, "body.png"), np.hstack(bodies))
+    fem = GpuPuppet(FEM, p.S, p.PADT, p.OUT_H, p.MOUTH_OPEN)
+    tiles = []
+    for st in poses:
+        c, a, _ = fem.head(st)
+        tiles.append(cv2.resize(on_red(c, a), (300, int(300 * a.shape[0] / a.shape[1]))))
+    cv2.imwrite(os.path.join(out, "female.png"), np.hstack(tiles))
 
 
 def main():
@@ -405,6 +479,7 @@ def main():
                      ("plate", check_plate_mismatch), ("style", check_style),
                      ("hairline", check_hairline), ("roll", check_roll), ("mouth", check_mouth),
                      ("outline", check_outline), ("smile", check_smile),
+                     ("female", check_female), ("female_mouth", check_female_mouth),
                      ("timing", timing)):
         ok, msg = fn(r)
         ok_all &= ok

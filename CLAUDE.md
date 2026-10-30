@@ -148,6 +148,8 @@ Head renders at 1.5× supersampling (same look as 2× at output size; 2× starve
 | Mouth corners must be closed (by the fading hinge; `holes` check) | Background visible through the corners of the open mouth when turned |
 | No filler in the mouth gap; corners closed by the hinge rotation fading out; `mouth` check measures depth through the opening (0.212 vs 0.067 for the old pillow) | A sack bulged forward ("red pillow"); its offcut floated as a lump; flat web walls read as skin flaps |
 | One warped skull, not two rotated halves unioned; rotation fully faded inside the outline (0.24 < jaw ~0.27); `outline` check (mouth ≥ 8 px from the near outline; screenshot version: 0) | Rigid split opened the sides: seam from mouth corner to outline + jaw notch; overlapping halves creased; a fade ending at 0.30 left a speck on the outline |
+| `--female` lips are a raised band carved into the skull along the mouth line, so the hinge cut parts them into an upper/lower lip; they ride the warp like the skin, never fill the gap (`female_mouth` check: cavity depth 0.208, same as male) | Lips drawn as separate geometry in the gap would reintroduce the "red pillow" / blocked-cavity bugs |
+| `--female` long hair + lashes live in `upperParts` (ride the scalp, not the jaw); the hair curtain is carved back off the frontal face so eyes/nose stay clear; new materials `M_LIP`=13, `M_LASH`=15 kept < 16 so debug-view-3 ids don't overflow | Hair in `lowerParts` would swing with the jaw; a face-covering curtain hides the eyes; `M_LIP`=16 overflowed the id debug view (16·16 > 255) |
 | Smile/frown (`corners` = 1.6·(smile − frown) blendshapes) bends the hinge curve itself: `mouthDroop()` = DROOP·(1 − 2.4·smile + 0.5·frown); smiling, upper lift ×(1 − 0.45) and jaw ×2.2 (open "D" grin), cheeks rise; `SMILE_LIFT_CUT` mirrored in `nose_point`; `smile` check (centreline ends: frown 50 / neutral 36 / smile −40 px) | Smile only bent the drawn closed-mouth line; open mouth identical at any expression |
 | Closed mouth never splits the skull | Normal samples read the cut plane: thin line along the closed hinge |
 | March out of steps while still inside the bound = hit, not miss | Rays skimming the lip edge ran out of 160 steps → partial-alpha see-through specks in the open mouth |
@@ -196,7 +198,8 @@ Add a check to `tests/render_check.py` for any new visual bug before fixing it.
 | `--skin` light/medium/tan/deep | medium | |
 | `--hair`, `--beard`, `--brows` gray/salt/white/brown/black | auto (else salt / gray / = beard) | override auto-style |
 | `--no-beard`, `--full-beard`, `--mustache`, `--no-mustache` | auto | override detected facial hair |
-| `--hairline` widow/straight/receding/bald | widow | not auto-detected (owner's choice) |
+| `--female` | off | preset: long face-framing hair, eyelashes, lips, bust; narrower jaw, finer brows; no facial hair; headphones off (cups clip the hair). Each underlying switch still overridable alongside it |
+| `--hairline` widow/straight/receding/bald | widow | not auto-detected (owner's choice); `--female` bumps the default widow to straight |
 | `--forehead` | 0.0 | 0–1, moves the front hairline up and back; 0.35–0.5 keeps the widow's peak visible |
 | `--style`, `--restyle`, `--no-auto-style` | `puppet_style.json` | style file; re-detect; ignore detection |
 | `--no-glasses`, `--no-headphones`, `--no-body`, `--no-erase` | off | flags |

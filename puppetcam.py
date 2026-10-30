@@ -590,6 +590,9 @@ def main():
     ap.add_argument("--full-beard", action="store_true")
     ap.add_argument("--mustache", action="store_true")
     ap.add_argument("--no-mustache", action="store_true")
+    ap.add_argument("--female", action="store_true",
+                    help="feminine puppet: long face-framing hair, eyelashes, lips, bust; narrower jaw, "
+                         "finer brows; no facial hair; headphones off (the cups clip the hair)")
     ap.add_argument("--no-glasses", action="store_true")
     ap.add_argument("--lid", type=float, default=0.35, help="resting upper-lid coverage 0..0.9")
     ap.add_argument("--scale", type=float, default=2.4, help="puppet size vs face height")
@@ -641,8 +644,14 @@ def main():
            "headphones": not args.no_headphones, "hairline": args.hairline,
            "forehead": float(np.clip(args.forehead, 0, 1))}
     cfg.update(look(args, style))
+    if args.female:
+        # a preset bundle of feminine cues; each underlying switch can still be overridden alongside it
+        if args.hairline == "widow":
+            cfg["hairline"] = "straight"            # the widow's peak reads as the default male hairline
+        cfg.update(female=True, long_hair=True, lashes=True, lips=True, bust=not args.no_body,
+                   headphones=False, beard_on=False, mustache=False, full_beard=False)
 
-    backend = {"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
+    backend ={"win32": cv2.CAP_DSHOW, "darwin": cv2.CAP_AVFOUNDATION}.get(sys.platform, cv2.CAP_ANY)
     if args.list_cams:
         # OpenCV can't read device names; the OBS Virtual Camera is one of these indices too (never use it)
         for i in range(8):

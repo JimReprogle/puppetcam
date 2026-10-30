@@ -6,7 +6,7 @@
 // Felt, not plastic: no specular on fabric, wrap diffuse, grazing sheen, fiber albedo/normal noise,
 // AO, soft shadows, and a fuzzy fiber halo on the silhouette instead of a hard edge.
 
-struct Params { v: array<vec4f, 12> };
+struct Params { v: array<vec4f, 14> };
 @group(0) @binding(0) var<uniform> P: Params;
 
 // decoded parameters (set once per fragment in fs)
@@ -30,6 +30,12 @@ var<private> g_fullbeard: f32;
 var<private> g_necktop: f32;    // body units above the collar
 var<private> g_hairline: f32;   // 0 widow, 1 straight, 2 receding, 3 bald
 var<private> g_forehead: f32;   // 0..1: front hairline moved back
+var<private> g_female: f32;     // feminine shaping: narrower jaw, slimmer jowls, finer brows
+var<private> g_longhair: f32;   // long face-framing hair curtains + crown volume
+var<private> g_lashes: f32;     // upper eyelashes
+var<private> g_lips: f32;       // raised, tinted lips around the mouth line
+var<private> g_lipcol: vec3f;   // lip albedo (linear)
+var<private> g_bust: f32;       // chest shaping on the torso sprite
 
 const M_SKIN = 0.0;
 const M_HAIR = 1.0;
@@ -44,7 +50,9 @@ const M_TONGUE = 9.0;
 const M_BROW = 10.0;
 const M_SHIRT = 11.0;
 const M_BUTTON = 12.0;
+const M_LIP = 13.0;
 const M_NECK = 14.0;
+const M_LASH = 15.0;
 
 const HINGE = vec3f(0.0, -0.165, -0.06);
 const UP_ANG = 0.48;
@@ -158,7 +166,7 @@ fn headBase(q: vec3f) -> f32 {
     let hy = 0.31 + 0.06 * g_long;
     var c = q - vec3f(0.0, -0.03, 0.0);
     let t = clamp(-c.y / hy, -1.0, 1.0);
-    c.x = c.x / (1.0 + 0.12 * t);                 // heavier, wider at the jaw
+    c.x = c.x / (1.0 + 0.12 * (1.0 - 0.55 * g_female) * t);   // heavier, wider at the jaw (slimmer when female)
     let e = sdEllipsoid(c, vec3f(0.25, hy, 0.21));
     let b = sdRoundBox(c, vec3f(0.245, hy, 0.205), 0.13);
     return mix(e, b, g_pez) * 0.93;
@@ -203,8 +211,9 @@ fn skull(q: vec3f) -> vec2f {
     let sm = max(g_corners, 0.0);
     d = smin(d, sdSphere(ax - vec3f(0.13 + 0.01 * sm, -0.10 + 0.035 * sm, 0.14 + 0.02 * sm), 0.085 + 0.012 * sm), 0.05);
     d = smin(d, sdEllipsoid(q - vec3f(0.0, -0.31, 0.12), vec3f(0.11, 0.08, 0.09)), 0.05);
-    // jowls: heavy cheek masses sagging beside the chin, below the mouth corners
-    d = smin(d, sdEllipsoid(ax - vec3f(0.165, -0.27, 0.11), vec3f(0.1, 0.12, 0.09)), 0.06);
+    // jowls: heavy cheek masses sagging beside the chin, below the mouth corners (slimmer when female)
+    let jw = 1.0 - 0.5 * g_female;
+    d = smin(d, sdEllipsoid(ax - vec3f(0.165, -0.27, 0.11), vec3f(0.1, 0.12, 0.09) * vec3f(jw, 1.0, jw)), 0.06);
     d = smin(d, sdEllipsoid(q - vec3f(0.0, -0.025, 0.24), vec3f(0.08, 0.09, 0.085)), 0.03);
     d = max(d, -sdSphere(ax - vec3f(0.032, -0.1, 0.275), 0.015));
     let h = hairAmt(q);
@@ -215,9 +224,27 @@ fn skull(q: vec3f) -> vec2f {
     if (b > 0.0) {
         d -= b * (0.016 + 0.01 * vnoise(q * vec3f(80.0, 12.0, 80.0)));
     }
+    let lp = lipAmt(q);
+    if (lp > 0.0) {
+        d -= lp * (0.010 + 0.004 * vnoise(q * vec3f(60.0, 60.0, 60.0)));
+    }
     var mat = select(M_SKIN, M_BEARD, b > 0.5);
     mat = select(mat, M_HAIR, h > 0.5);
+    mat = select(mat, M_LIP, lp > 0.5);
     return vec2f(d, mat);
+}
+
+// raised lip band hugging the mouth line, front of the face; cut by the mouth opening like the skull,
+// so it parts into an upper and a lower lip when the mouth opens
+fn lipAmt(q: vec3f) -> f32 {
+    if (g_lips < 0.5) {
+        return 0.0;
+    }
+    let line = HINGE.y - mouthDroop() * q.x * q.x;
+    let band = 1.0 - smoothstep(0.0, 0.05, abs(q.y - line));
+    let span = 1.0 - smoothstep(0.085, 0.115, abs(q.x));
+    let front = smoothstep(0.1, 0.17, q.z);
+    return band * span * front;
 }
 
 // full beard (auto-style or --full-beard): a raised fur shell over the lower face and jowls, leaving
@@ -306,11 +333,47 @@ fn browLockAt(ax: vec3f) -> vec2f {
     return vec2f(f32(idx), t);
 }
 
+// long face-framing hair: a curtain down each side of the face (tapering to a tail) plus crown/back
+// volume, carved back off the frontal face so the eyes and nose stay clear. Rides the upper head.
+fn longHair(q: vec3f) -> f32 {
+    let ax = vec3f(abs(q.x), q.y, q.z);
+    let t = clamp((0.2 - ax.y) / 0.75, 0.0, 1.0);          // 0 at the temple .. 1 at the tail
+    let cx = 0.265 - 0.02 * t;                             // falls slightly inward
+    let halfw = mix(0.075, 0.016, t);                      // tapers to a thin tail
+    var d = sdRoundBox(ax - vec3f(cx, -0.17, 0.03), vec3f(halfw, 0.38, 0.14), 0.05);
+    d = smin(d, sdEllipsoid(q - vec3f(0.0, 0.12, -0.02), vec3f(0.29, 0.26, 0.26)), 0.06);  // crown + back
+    d = max(d, -sdEllipsoid(q - vec3f(0.0, -0.05, 0.28), vec3f(0.255, 0.42, 0.18)));        // keep off the face
+    d -= 0.01 * vnoise(q * vec3f(55.0, 16.0, 55.0));       // fiber
+    return d;
+}
+
+// upper eyelashes: a short comb of fine tapered spikes along the top-front eye rim, up and outward
+fn lashes(ax: vec3f) -> f32 {
+    let bound = sdSphere(ax - (EYE_C + vec3f(0.0, 0.045, 0.03)), 0.085);
+    if (bound > 0.02) {
+        return bound;
+    }
+    var d = 1e3;
+    for (var i = 0; i < 7; i++) {
+        let f = f32(i) / 6.0;                              // inner .. outer along the lid
+        let root = EYE_C + vec3f((f - 0.5) * 0.09, EYE_R * (0.42 + 0.18 * f), 0.034 + 0.012 * f);
+        let dir = normalize(vec3f((f - 0.5) * 0.7, 0.45, 1.0));   // out and forward, a slight curl (not straight up)
+        d = min(d, sdTaper(ax, root, root + dir * 0.022, 0.0042, 0.0006));
+    }
+    return d;
+}
+
 // parts that ride on the upper head (never cut by the hinge)
 fn upperParts(q: vec3f) -> vec2f {
     let ax = vec3f(abs(q.x), q.y, q.z);
     // ping-pong eyes
     var r = vec2f(sdSphere(ax - EYE_C, EYE_R), M_EYE);
+    if (g_longhair > 0.5) {
+        r = U(r, vec2f(longHair(q), M_HAIR));
+    }
+    if (g_lashes > 0.5) {
+        r = U(r, vec2f(lashes(ax), M_LASH));
+    }
     // heavy upper lids: a felt shell over the top of each eye, edge height set by lid
     let edge = EYE_C.y + (1.0 - 2.0 * g_lid) * EYE_R;
     let shell = abs(sdSphere(ax - EYE_C, EYE_R + 0.004)) - 0.0035;
@@ -419,6 +482,9 @@ fn bodyMap(pw: vec3f) -> vec2f {
     var d = sdRoundBox(c - vec3f(0.0, -1.32, -0.02), vec3f(0.92 * sh, 1.25, 0.30), 0.30);
     // rounded chest so the front isn't a flat slab (kept below the shoulder line)
     d = smin(d, sdEllipsoid(p - vec3f(0.0, -1.0, 0.0), vec3f(0.8 * sh, 0.8, 0.40)), 0.12);
+    if (g_bust > 0.5) {
+        d = smin(d, sdEllipsoid(ax - vec3f(0.28 * sh, -0.82, 0.26), vec3f(0.24, 0.20, 0.22)), 0.12);
+    }
     d = smin(d, sdCapsule(ax, vec3f(0.84 * sh, -0.48, -0.02), vec3f(0.97 * sh, -2.6, 0.04), 0.2), 0.05);
     d = max(d, -sdCylY(p - vec3f(0.0, 0.0, 0.03), 0.2, -0.5, 1.0));    // neck opening
     var r = vec2f(d, M_SHIRT);
@@ -521,6 +587,12 @@ fn albedo(mat: f32) -> vec3f {
     if (mat == M_BUTTON) {
         return vec3f(0.8, 0.8, 0.78);
     }
+    if (mat == M_LIP) {
+        return g_lipcol;
+    }
+    if (mat == M_LASH) {
+        return vec3f(0.02, 0.02, 0.025);
+    }
     return P.v[6].xyz;                                // shirt
 }
 
@@ -590,6 +662,12 @@ fn shade(p: vec3f, rd: vec3f, mat: f32) -> vec3f {
                  (1.0 - smoothstep(0.10, 0.12, abs(q.x))) * smoothstep(0.12, 0.17, q.z);
         alb *= 1.0 - 0.8 * lm;
     }
+    if (mat == M_LIP && g_closed > 0.5 && g_mode < 0.5) {
+        // seam parting the upper and lower lip of a closed mouth
+        let line = HINGE.y - mouthDroop() * q.x * q.x;
+        let seam = (1.0 - smoothstep(0.004, 0.009, abs(q.y - line))) * (1.0 - smoothstep(0.09, 0.11, abs(q.x)));
+        alb *= 1.0 - 0.55 * seam;
+    }
     let L = normalize(vec3f(-0.35, 0.55, 0.76));
     let diff = max((dot(n, L) + 0.3) / 1.3, 0.0);
     let sh = softShadow(p + n * 0.004, L);
@@ -643,6 +721,12 @@ fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     g_necktop = P.v[10].y;
     g_hairline = P.v[10].z;
     g_forehead = P.v[10].w;
+    g_female = P.v[12].x;
+    g_longhair = P.v[12].y;
+    g_lashes = P.v[12].z;
+    g_lips = P.v[12].w;
+    g_lipcol = P.v[13].xyz;
+    g_bust = P.v[13].w;
     g_closed = P.v[7].y;
     let F = P.v[7].z;
     let fuzz = P.v[7].w;
