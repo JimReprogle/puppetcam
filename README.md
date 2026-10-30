@@ -340,11 +340,14 @@ The virtual camera is the one Linux-specific setup step. OBS's own virtual camer
 v4l2loopback device too, so if you can "Start Virtual Camera" in OBS you already have the module; otherwise
 load it yourself.
 
-1. Install the virtual-camera kernel module and the Vulkan loader:
+1. Install the virtual-camera kernel module, the Vulkan loader, and MediaPipe's GL runtime libraries:
    ```bash
-   sudo apt install v4l2loopback-dkms libvulkan1      # Debian/Ubuntu; use your distro's equivalents
+   sudo apt install v4l2loopback-dkms libvulkan1 libegl1 libgles2   # Debian/Ubuntu; distro equivalents vary
    ```
-   You also need your GPU's Vulkan driver (for example `mesa-vulkan-drivers`).
+   You also need your GPU's Vulkan driver (for example `mesa-vulkan-drivers`). `libegl1` and `libgles2` are
+   normally already present on a desktop with GPU drivers, but a minimal or server install must add them:
+   MediaPipe's native library links against EGL and GLES and fails to load without them, even for CPU
+   inference (`OSError: libEGL.so.1: cannot open shared object file`). Verified in a clean container.
 2. Load a loopback device (do this after each reboot, or configure it to load at boot):
    ```bash
    sudo modprobe v4l2loopback devices=1 card_label=puppetcam exclusive_caps=1

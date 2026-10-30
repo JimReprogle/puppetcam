@@ -43,12 +43,20 @@ pip install mediapipe==1.2.0 pyvirtualcam==0.15.0 wgpu==0.32.0 opencv-python num
   option) but NOT yet executed on Windows: all deps have win_amd64 wheels (cp313/cp314); wgpu runs on
   DX12/Vulkan; capture uses CAP_DSHOW. The Windows mediapipe 1.2.0 build has GPU disabled (its DLL contains
   "GPU processing is disabled in build flags"; the macOS dylib has Metal code instead), hence `--seg-mode hybrid`.
-- Linux x86_64 support written 2026-10-30, NOT yet executed on Linux: deps have manylinux wheels; wgpu runs
-  on Vulkan; capture uses CAP_V4L2; vcam needs the v4l2loopback kernel module (`modprobe v4l2loopback`), and
-  `main` catches the pyvirtualcam open error on Linux and prints that modprobe hint. `--seg-mode auto` is
-  `gpu` only on `sys.platform == "darwin"`; Windows AND Linux default to `hybrid` because the Linux wheel's
-  GPU delegate fails at EGL display creation off a desktop session (MediaPipe issue #5503). A Linux desktop
-  with working EGL can force `--seg-mode gpu`. All platform logic keys on `sys.platform` (darwin/win32/linux).
+- Linux x86_64 support written 2026-10-30: deps have manylinux wheels; wgpu runs on Vulkan; capture uses
+  CAP_V4L2; vcam needs the v4l2loopback kernel module (`modprobe v4l2loopback`), and `main` catches the
+  pyvirtualcam open error on Linux and prints that modprobe hint. `--seg-mode auto` is `gpu` only on
+  `sys.platform == "darwin"`; Windows AND Linux default to `hybrid` because the Linux wheel's GPU delegate
+  fails at EGL display creation off a desktop session (MediaPipe issue #5503). A Linux desktop with working
+  EGL can force `--seg-mode gpu`. All platform logic keys on `sys.platform` (darwin/win32/linux).
+- MediaPipe's Linux native lib (`tasks/c/libmediapipe.so`) dlopens `libEGL.so.1` + `libGLESv2.so.2` at
+  Task-creation time even for CPU inference, so Linux needs `libegl1` + `libgles2` installed or it dies with
+  `OSError: libEGL.so.1: cannot open shared object file` (desktops with GPU drivers already have them; a
+  minimal/server/container install does not). Found 2026-10-30 testing in a clean amd64 podman container.
+- Container-validated 2026-10-30 (amd64 podman, software Vulkan/lavapipe): deps install + import, `auto` ->
+  `hybrid`, the hybrid CPU segmenter returns a correct (720,1280) mask, the CAP_V4L2 branch resolves,
+  pyvirtualcam raises the expected RuntimeError (no loopback) that `main` handles, and wgpu gets a Vulkan
+  adapter. NOT testable without real hardware: GPU render speed and the v4l2loopback vcam output path.
 
 ## Per-frame pipeline (`main`)
 
